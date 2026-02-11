@@ -103,39 +103,28 @@ env:
 
 ### 4. Grant Permissions
 
-After deploying, you must grant the app's service principal (SP) access to required resources:
+After deploying, you must grant the app's service principal (SP) access to required resources.
 
-1. **Find the SP**: Go to **Compute > Apps > [your app] > Authorization**
-   - The SP name follows the pattern: `app-XXXXX [app-name]`
+#### Via Databricks UI
 
-2. **Grant Genie Space access**: For each Genie Space you want to analyze:
-   - Open the Genie Space settings
-   - Add the SP with **Can Edit** permission
+You can directly add resources such as Genie Space, LLM Serving Endpoint, and SQL Warehouse in the App, by going: `Databricks App UI > App resources > Edit`
 
-3. **Grant LLM endpoint access**:
-   - Go to **Serving > [your LLM endpoint] > Permissions**
-   - Add the SP with **Can Query** permission
+| Resource | Permission |
+| ---------- | ----------- |
+| Genie Space | **Can Edit** |
+| LLM Serving Endpoint | **Can Query** |
+| SQL Warehouse *(Optimize mode)* | **Can Use** |
 
-4. **Grant SQL Warehouse access** (for Optimize mode):
-   - Go to **SQL > SQL Warehouses > [your warehouse] > Permissions**
-   - Add the SP with **Can Use** permission
-   - Update `SQL_WAREHOUSE_ID` in `app.yaml` with your warehouse ID
+> **Note:** Make sure the `SQL_WAREHOUSE_ID` in `app.yaml` is the same one you are granting access to here.
 
-5. **Grant table access** (for Optimize mode):
-   - The SP needs SELECT access to the tables your Genie Space queries
-   - Run the following SQL (replace with your SP name and table paths):
+#### Via Permission Notebook
 
-   ```sql
-   -- Grant catalog and schema access
-   GRANT USE CATALOG ON CATALOG your_catalog TO `app-XXXXX [your-app-name]`;
-   GRANT USE SCHEMA ON SCHEMA your_catalog.your_schema TO `app-XXXXX [your-app-name]`;
+The `notebooks/grant_app_permissions.py` notebook automates grants that require programmatic APIs or SQL commands. Open it in your Databricks workspace, fill in the configuration variables, and run through the cells.
 
-   -- Grant SELECT on tables (option A: specific tables)
-   GRANT SELECT ON TABLE your_catalog.your_schema.table1 TO `app-XXXXX [your-app-name]`;
-
-   -- Or grant SELECT on entire schema (option B: all tables in schema)
-   GRANT SELECT ON SCHEMA your_catalog.your_schema TO `app-XXXXX [your-app-name]`;
-   ```
+| Resource | Permission | Required For |
+| ---------- | ----------- | -------------- |
+| Workspace Directory | **Can Manage** | Optimize mode (create new Genie Spaces in `GENIE_TARGET_DIRECTORY`) |
+| Unity Catalog / Schema | **USE CATALOG**, **USE SCHEMA**, **SELECT** | Optimize mode (execute benchmark SQL queries) |
 
 ## MLflow Tracing (Optional)
 
