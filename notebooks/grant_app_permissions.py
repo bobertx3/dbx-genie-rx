@@ -155,6 +155,14 @@ else:
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Step 5 - Grant SQL Warehouse Permissions
+# MAGIC
+# MAGIC Required for **Optimize mode** so the app can execute SQL queries during
+# MAGIC benchmark labeling sessions. This grants **CAN USE** on the SQL warehouse.
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Summary
 # MAGIC
 # MAGIC Run the cell below to verify all permissions were applied.
