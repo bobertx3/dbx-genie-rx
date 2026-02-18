@@ -13,13 +13,13 @@
 # MAGIC |----------|-----------|--------------|
 # MAGIC | Workspace Directory | **Can Manage** | Optimize mode (create new Genie Spaces) |
 # MAGIC | Unity Catalog / Schema | **USE CATALOG**, **USE SCHEMA**, **SELECT** | Optimize mode |
+# MAGIC | SQL Warehouse | **Can Use** | Optimize mode (benchmark labeling) |
 # MAGIC
 # MAGIC ### Resources to grant via UI
 # MAGIC
 # MAGIC | Resource | Permission | Where |
 # MAGIC |----------|-----------|-------|
 # MAGIC | LLM Serving Endpoint | **Can Query** | Serving > Endpoint > Permissions |
-# MAGIC | SQL Warehouse | **Can Use** | SQL > Warehouse > Permissions |
 # MAGIC | Genie Space(s) | **Can Edit** | Genie Space > Settings |
 # MAGIC
 # MAGIC ### Prerequisites
@@ -40,6 +40,8 @@ APP_NAME = ""
 WORKSPACE_DIRECTORY = ""
 CATALOG_NAME = ""
 SCHEMA_NAME = ""
+SQL_WAREHOUSE_ID = ""
+
 
 # COMMAND ----------
 
@@ -48,6 +50,7 @@ print(f"App Name:             {APP_NAME}")
 print(f"Workspace Directory:  {WORKSPACE_DIRECTORY or '(skipped)'}")
 print(f"Catalog:              {CATALOG_NAME or '(skipped)'}")
 print(f"Schema:               {SCHEMA_NAME or '(skipped)'}")
+print(f"SQL Warehouse:               {SQL_WAREHOUSE_ID or '(skipped)'}")
 
 # COMMAND ----------
 
@@ -155,6 +158,37 @@ else:
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Step 5 - Grant SQL Warehouse Permissions
+# MAGIC
+# MAGIC Required for **Optimize mode** so the app can execute SQL queries during
+# MAGIC benchmark labeling sessions. This grants **CAN USE** on the SQL warehouse.
+
+# COMMAND ----------
+
+if SQL_WAREHOUSE_ID:
+    # Get the object ID of the workspace directory
+    obj_info = w.api_client.do(
+      "PATCH",
+      f"/api/2.0/permissions/sql/warehouses/{SQL_WAREHOUSE_ID}",
+      body={
+          "access_control_list": [
+              {
+                  "service_principal_name": SP_APP_ID,
+                  "permission_level": "CAN_USE"
+              }
+          ]
+      },
+  )
+    object_id = obj_info["object_id"]
+    print(
+        f"Granted CAN_MANAGE on directory '{SQL_WAREHOUSE_ID}' (ID: {object_id}) to {SP_NAME}"
+    )
+else:
+    print("Skipped - no SQL warehouse specified.")
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Summary
 # MAGIC
 # MAGIC Run the cell below to verify all permissions were applied.
@@ -172,6 +206,7 @@ print()
 checks = {
     "Workspace Directory": bool(WORKSPACE_DIRECTORY),
     "Unity Catalog Grants": bool(CATALOG_NAME and SCHEMA_NAME),
+    "SQL Warehouse": bool(SQL_WAREHOUSE_ID),
 }
 
 for resource, granted in checks.items():
@@ -187,6 +222,5 @@ if skipped:
 print()
 print("  Don't forget to grant these via the UI:")
 print("    - LLM Serving Endpoint: Can Query")
-print("    - SQL Warehouse: Can Use")
 print("    - Genie Space(s): Can Edit")
 print()
