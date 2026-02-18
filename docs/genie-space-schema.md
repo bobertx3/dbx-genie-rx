@@ -1,18 +1,22 @@
 # Databricks Genie Space Configuration Schema
 
-This document describes the JSON schema for Databricks Genie Space configuration files. Adheres to [official doc](https://docs.databricks.com/aws/en/genie/conversation-api#create-or-select-a-genie-space)
+This document describes the serialized Genie Space JSON schema used by the Genie Conversation API. It is aligned with the [official Databricks doc](https://docs.databricks.com/aws/en/genie/conversation-api#create-or-select-a-genie-space). Last verified on 2026-02-18.
 
 ## Root Structure
 
 | Field | Type | Required | Description |
 | ------- | ------ | ---------- | ------------- |
-| `version` | integer | Yes | Schema version number |
-| `config` | object | Yes | Configuration settings including sample questions |
-| `data_sources` | object | Yes | Data source definitions (tables) |
-| `instructions` | object | Yes | Instructions for the Genie agent |
-| `benchmarks` | object | No | Benchmark questions for evaluation |
+| `version` | integer | Yes | Schema version. Use `2` for newly created spaces. |
+| `config` | object | Yes | Configuration settings including `sample_questions`. |
+| `data_sources` | object | Yes | Data source definitions (`tables`, optional `metric_views`). |
+| `instructions` | object | Yes | Instructions for the Genie agent. |
+| `benchmarks` | object | No | Benchmark questions used for quality evaluation. |
 
-## JSON Schema
+## Serialization Note
+
+When calling the create/update APIs, this object is passed as an escaped JSON string in `serialized_space`.
+
+## JSON Example
 
 ```json
 {
@@ -93,8 +97,8 @@ This document describes the JSON schema for Databricks Genie Space configuration
       {
         "id": "01f0b37c378e1c9100000000000000a1",
         "content": [
-          "When calculating revenue, sum the order_amount column. ",
-          "When asked about 'last month', use the previous calendar month. ",
+          "When calculating revenue, sum the order_amount column.",
+          "When asked about last month, use the previous calendar month.",
           "Round all monetary values to 2 decimal places."
         ]
       }
@@ -134,13 +138,13 @@ This document describes the JSON schema for Databricks Genie Space configuration
           {
             "name": "region_name",
             "type_hint": "STRING",
-            "description": ["The region to filter by (e.g., 'North America', 'Europe')"],
+            "description": ["The region to filter by (e.g., North America, Europe)"],
             "default_value": {
               "values": ["North America"]
             }
           }
         ],
-        "usage_guidance": ["Use this example when the user asks about sales filtered by a specific geographic region"]
+        "usage_guidance": ["Use this example when the user asks about sales filtered by a specific geographic region."]
       }
     ],
     "sql_functions": [
@@ -161,8 +165,8 @@ This document describes the JSON schema for Databricks Genie Space configuration
           "alias": "customers"
         },
         "sql": ["orders.customer_id = customers.customer_id"],
-        "comment": ["Join orders to customers on customer_id"],
-        "instruction": ["Use this join when you need customer details for order analysis"]
+        "comment": ["Join orders to customers on customer_id."],
+        "instruction": ["Use this join when customer attributes are required for order analysis."]
       }
     ],
     "sql_snippets": {
@@ -172,8 +176,8 @@ This document describes the JSON schema for Databricks Genie Space configuration
           "sql": ["orders.order_amount > 1000"],
           "display_name": "high value orders",
           "synonyms": ["large orders", "big purchases"],
-          "comment": ["Filters to orders over $1000"],
-          "instruction": ["Use when the user asks about high-value or large orders"]
+          "comment": ["Filters to orders over 1000."],
+          "instruction": ["Use when the user asks about high-value or large orders."]
         }
       ],
       "expressions": [
@@ -183,8 +187,8 @@ This document describes the JSON schema for Databricks Genie Space configuration
           "sql": ["YEAR(orders.order_date)"],
           "display_name": "year",
           "synonyms": ["fiscal year", "calendar year"],
-          "comment": ["Extracts the year from order date"],
-          "instruction": ["Use for year-over-year analysis"]
+          "comment": ["Extracts year from order date."],
+          "instruction": ["Use for year-over-year analysis."]
         }
       ],
       "measures": [
@@ -194,8 +198,8 @@ This document describes the JSON schema for Databricks Genie Space configuration
           "sql": ["SUM(orders.order_amount)"],
           "display_name": "total revenue",
           "synonyms": ["revenue", "total sales"],
-          "comment": ["Sum of all order amounts"],
-          "instruction": ["Use this measure for revenue calculations"]
+          "comment": ["Sum of order amounts."],
+          "instruction": ["Use this measure for revenue calculations."]
         }
       ]
     }
@@ -203,7 +207,7 @@ This document describes the JSON schema for Databricks Genie Space configuration
   "benchmarks": {
     "questions": [
       {
-        "id": "01f0d0b4e815100000000000000000g1",
+        "id": "01f0d0b4e815100000000000000000a1",
         "question": ["What is the average order value?"],
         "answer": [
           {
@@ -216,3 +220,33 @@ This document describes the JSON schema for Databricks Genie Space configuration
   }
 }
 ```
+
+## Validation Rules (Databricks Conversation API)
+
+### ID Rules
+
+- All IDs must be 32-character lowercase hexadecimal strings with no hyphens.
+- IDs are required in: `config.sample_questions`, `instructions.text_instructions`, `instructions.example_question_sqls`, `instructions.sql_functions`, `instructions.join_specs`, `instructions.sql_snippets.filters`, `instructions.sql_snippets.expressions`, `instructions.sql_snippets.measures`, and `benchmarks.questions`.
+- All IDs in `serialized_space` must be unique.
+
+### Sorting Rules
+
+- `data_sources.tables` sorted by `identifier` (ascending).
+- `data_sources.tables[].column_configs` sorted by `column_name` (ascending).
+- `data_sources.metric_views` sorted by `identifier` (ascending).
+- `data_sources.metric_views[].column_configs` sorted by `column_name` (ascending).
+- `instructions.example_question_sqls[].parameters` sorted by `name` (ascending).
+
+### Size and Length Limits
+
+- `serialized_space` string must be <= 3.5 MB.
+- Combined size of `comment`, `instruction`, and `usage_guidance` fields must be <= 64 KB.
+- Any single string value inside `description`, `content`, `question`, `sql`, `instruction`, or `synonyms` must be <= 1 KB.
+- Each table identifier part (`catalog`, `schema`, `table`) must be <= 255 characters.
+
+### Content Constraints
+
+- Use schema version `2` for new spaces.
+- Maximum number of tables/metric views is workspace-dependent.
+- `benchmarks.questions[].answer` must contain exactly one item, and its `format` must be `SQL`.
+- Databricks guidance recommends at least 5 tested `example_question_sqls` and at least 5 benchmark questions.
