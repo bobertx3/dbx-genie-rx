@@ -4,16 +4,17 @@
  */
 
 import { useMemo } from "react"
-import { ArrowLeft, Loader2, Sparkles, AlertTriangle, Eye } from "lucide-react"
+import { ArrowLeft, Loader2, Sparkles, AlertTriangle, Eye, Search } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { AccordionItem } from "@/components/ui/accordion"
 import { SuggestionCard } from "@/components/SuggestionCard"
-import type { OptimizationSuggestion } from "@/types"
+import type { OptimizationSuggestion, FailureDiagnosis } from "@/types"
 
 interface OptimizationPageProps {
   suggestions: OptimizationSuggestion[] | null
   summary: string | null
+  diagnosis?: FailureDiagnosis[]
   isLoading: boolean
   error: string | null
   selectedSuggestions: Set<number>
@@ -52,6 +53,7 @@ const PRIORITY_CONFIG = {
 export function OptimizationPage({
   suggestions,
   summary,
+  diagnosis,
   isLoading,
   error,
   selectedSuggestions,
@@ -174,6 +176,38 @@ export function OptimizationPage({
                 <p className="font-medium text-primary mb-1">Optimization Strategy</p>
                 <p className="text-secondary text-sm">{summary}</p>
               </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Failure Diagnosis */}
+      {diagnosis && diagnosis.length > 0 && !isLoading && (
+        <Card>
+          <CardContent className="py-4">
+            <div className="flex items-start gap-3 mb-3">
+              <Search className="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+              <p className="font-medium text-primary">
+                Failure Diagnosis ({diagnosis.length} question{diagnosis.length !== 1 ? "s" : ""})
+              </p>
+            </div>
+            <div className="space-y-3 ml-8">
+              {diagnosis.map((d, i) => (
+                <div key={i} className="text-sm border-l-2 border-amber-300 dark:border-amber-700 pl-3">
+                  <p className="font-medium text-primary">{d.question}</p>
+                  <div className="flex flex-wrap gap-1.5 mt-1">
+                    {d.failure_types.map((ft) => (
+                      <span
+                        key={ft}
+                        className="px-1.5 py-0.5 rounded text-xs bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300"
+                      >
+                        {ft}
+                      </span>
+                    ))}
+                  </div>
+                  <p className="text-muted mt-1">{d.explanation}</p>
+                </div>
+              ))}
             </div>
           </CardContent>
         </Card>

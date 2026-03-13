@@ -12,8 +12,10 @@ import type {
   FetchSpaceResponse,
   SqlExecutionResult,
   OptimizationSuggestion,
+  FailureDiagnosis,
   SynthesisResult,
   GenieCreateResponse,
+  AutoLabelResult,
 } from "@/types"
 import {
   fetchSpace,
@@ -25,6 +27,7 @@ import {
   queryGenie,
   executeSql,
   createGenieSpace as createGenieSpaceApi,
+  autoLabelBenchmarks,
 } from "@/lib/api"
 import { getBenchmarkQuestions, getExpectedSql } from "@/lib/benchmarkUtils"
 
@@ -33,6 +36,8 @@ export interface AnalysisState {
   phase: Phase
   optimizeView: OptimizeView | null
   genieSpaceId: string
+  sqlWarehouseId: string
+  targetDirectory: string
   spaceData: Record<string, unknown> | null
   sections: SectionInfo[]
   currentSectionIndex: number
@@ -60,12 +65,18 @@ export interface AnalysisState {
   labelingCorrectAnswers: Record<string, boolean | null>
   labelingFeedbackTexts: Record<string, string>
   labelingProcessingErrors: Record<string, string>
+  // Auto-labeling state
+  autoLabelResults: Record<string, AutoLabelResult>
+  userOverrides: Record<string, boolean>  // true = user disagrees with auto-label
+  overrideReasons: Record<string, string>
+  isAutoLabeling: boolean
   // Benchmark processing state (upfront processing before labeling)
   isProcessingBenchmarks: boolean
   benchmarkProcessingProgress: { current: number; total: number } | null
   // Optimization state
   optimizationSuggestions: OptimizationSuggestion[] | null
   optimizationSummary: string | null
+  optimizationDiagnosis: FailureDiagnosis[]
   isOptimizing: boolean
   // Preview state
   selectedSuggestions: Set<number>  // Original indices of selected suggestions
@@ -83,6 +94,8 @@ const initialState: AnalysisState = {
   phase: "input",
   optimizeView: null,
   genieSpaceId: "",
+  sqlWarehouseId: "",
+  targetDirectory: "",
   spaceData: null,
   sections: [],
   currentSectionIndex: 0,
@@ -110,12 +123,18 @@ const initialState: AnalysisState = {
   labelingCorrectAnswers: {},
   labelingFeedbackTexts: {},
   labelingProcessingErrors: {},
+  // Auto-labeling state
+  autoLabelResults: {},
+  userOverrides: {},
+  overrideReasons: {},
+  isAutoLabeling: false,
   // Benchmark processing state
   isProcessingBenchmarks: false,
   benchmarkProcessingProgress: null,
   // Optimization state
   optimizationSuggestions: null,
   optimizationSummary: null,
+  optimizationDiagnosis: [],
   isOptimizing: false,
   // Preview state
   selectedSuggestions: new Set<number>(),
@@ -594,7 +613,7 @@ export function useAnalysis() {
   }, [])
 
   const startOptimization = useCallback(() => {
-    const { genieSpaceId, spaceData, selectedQuestions, labelingCorrectAnswers, labelingFeedbackTexts } = state
+    const { genieSpaceId, spaceData, selectedQuestions, labelingCorrectAnswers, labelingFeedbackTexts, autoLabelResults, userOverrides, overrideReasons } = state
     if (!spaceData) return
 
     setState((prev) => ({ ...prev, isOptimizing: true, error: null, optimizeView: "optimization" }))
@@ -602,13 +621,20 @@ export function useAnalysis() {
     // Get benchmark questions and build labeling feedback
     const allQuestions = getBenchmarkQuestions(spaceData)
 
-    // Build feedback items from selected questions
+    // Build feedback items from selected questions with auto-label context
     const labelingFeedback = selectedQuestions.map(id => {
       const question = allQuestions.find(q => q.id === id)
+      const autoResult = autoLabelResults[id]
+      const userOverride = userOverrides[id]
+      const overrideReason = overrideReasons[id]
       return {
         question_text: question?.question.join(" ") || "",
         is_correct: labelingCorrectAnswers[id] ?? null,
         feedback_text: labelingFeedbackTexts[id] || null,
+        auto_label: autoResult?.auto_label || null,
+        auto_label_reason: autoResult?.reason || null,
+        user_override: userOverride || null,
+        override_reason: overrideReason || null,
       }
     })
 
@@ -625,6 +651,7 @@ export function useAnalysis() {
           ...prev,
           optimizationSuggestions: response.suggestions,
           optimizationSummary: response.summary,
+          optimizationDiagnosis: response.diagnosis || [],
           isOptimizing: false,
         }))
       },
@@ -637,7 +664,7 @@ export function useAnalysis() {
         }))
       }
     )
-  }, [state.genieSpaceId, state.spaceData, state.selectedQuestions, state.labelingCorrectAnswers, state.labelingFeedbackTexts])
+  }, [state.genieSpaceId, state.spaceData, state.selectedQuestions, state.labelingCorrectAnswers, state.labelingFeedbackTexts, state.autoLabelResults, state.userOverrides, state.overrideReasons])
 
   const generatePreviewConfig = useCallback(async () => {
     const { spaceData, optimizationSuggestions, selectedSuggestions } = state
@@ -691,6 +718,8 @@ export function useAnalysis() {
       const response = await createGenieSpaceApi({
         display_name: displayName,
         merged_config: previewConfig,
+        parent_path: state.targetDirectory || undefined,
+        sql_warehouse_id: state.sqlWarehouseId || undefined,
       })
       setState((prev) => ({
         ...prev,
@@ -704,7 +733,15 @@ export function useAnalysis() {
         genieCreateError: err instanceof Error ? err.message : "Failed to create Genie Space",
       }))
     }
-  }, [state.previewConfig])
+  }, [state.previewConfig, state.targetDirectory, state.sqlWarehouseId])
+
+  const setSqlWarehouseId = useCallback((id: string) => {
+    setState((prev) => ({ ...prev, sqlWarehouseId: id }))
+  }, [])
+
+  const setTargetDirectory = useCallback((dir: string) => {
+    setState((prev) => ({ ...prev, targetDirectory: dir }))
+  }, [])
 
   const clearSpaceData = useCallback(() => {
     setState((prev) => ({
@@ -775,6 +812,35 @@ export function useAnalysis() {
       labelingCorrectAnswers: {},
       labelingFeedbackTexts: {},
       labelingProcessingErrors: {},
+      autoLabelResults: {},
+      userOverrides: {},
+      overrideReasons: {},
+    }))
+  }, [])
+
+  // Auto-labeling actions
+  const setUserOverride = useCallback((questionId: string, disagrees: boolean) => {
+    setState((prev) => ({
+      ...prev,
+      userOverrides: { ...prev.userOverrides, [questionId]: disagrees },
+      // If user agrees with auto-label, sync the correctAnswer
+      ...(!disagrees && prev.autoLabelResults[questionId] ? {
+        labelingCorrectAnswers: {
+          ...prev.labelingCorrectAnswers,
+          [questionId]: prev.autoLabelResults[questionId].auto_label === "correct"
+            ? true
+            : prev.autoLabelResults[questionId].auto_label === "incorrect"
+            ? false
+            : prev.labelingCorrectAnswers[questionId],
+        },
+      } : {}),
+    }))
+  }, [])
+
+  const setOverrideReason = useCallback((questionId: string, reason: string) => {
+    setState((prev) => ({
+      ...prev,
+      overrideReasons: { ...prev.overrideReasons, [questionId]: reason },
     }))
   }, [])
 
@@ -837,9 +903,10 @@ export function useAnalysis() {
 
           // Execute both SQLs in parallel
           const expectedSql = getExpectedSql(question)
+          const warehouseId = state.sqlWarehouseId || undefined
           const [genieExec, expectedExec] = await Promise.allSettled([
-            executeSql(response.sql),
-            expectedSql ? executeSql(expectedSql) : Promise.resolve(null),
+            executeSql(response.sql, warehouseId),
+            expectedSql ? executeSql(expectedSql, warehouseId) : Promise.resolve(null),
           ])
 
           if (benchmarkProcessingCancelledRef.current) continue
@@ -904,17 +971,88 @@ export function useAnalysis() {
       }
     }
 
-    // Processing complete - navigate to labeling
+    // Processing complete - run auto-labeling
     if (!benchmarkProcessingCancelledRef.current) {
       setState((prev) => ({
         ...prev,
-        isProcessingBenchmarks: false,
+        isAutoLabeling: true,
         benchmarkProcessingProgress: null,
-        optimizeView: "labeling",
-        hasLabelingSession: true,
       }))
+
+      try {
+        // Build auto-label items from processed results
+        const allQuestions = getBenchmarkQuestions(spaceData)
+
+        // Need to read current state for results
+        const currentState = await new Promise<AnalysisState>((resolve) => {
+          setState((prev) => {
+            resolve(prev)
+            return prev
+          })
+        })
+
+        const autoLabelItems = selectedQuestions
+          .filter(id => currentState.labelingGeneratedSql[id] || currentState.labelingProcessingErrors[id])
+          .map(id => {
+            const question = allQuestions.find(q => q.id === id)
+            return {
+              question_id: id,
+              question_text: question?.question.join(" ") || "",
+              genie_sql: currentState.labelingGeneratedSql[id] || null,
+              expected_sql: question ? getExpectedSql(question) : null,
+              genie_result: currentState.labelingGenieResults[id] || null,
+              expected_result: currentState.labelingExpectedResults[id] || null,
+            }
+          })
+
+        if (autoLabelItems.length > 0) {
+          const response = await autoLabelBenchmarks(autoLabelItems)
+
+          // Build results map and pre-populate correct answers
+          const autoResults: Record<string, AutoLabelResult> = {}
+          const prePopulatedAnswers: Record<string, boolean | null> = {}
+
+          for (const result of response.results) {
+            autoResults[result.question_id] = result
+            if (result.auto_label === "correct") {
+              prePopulatedAnswers[result.question_id] = true
+            } else if (result.auto_label === "incorrect") {
+              prePopulatedAnswers[result.question_id] = false
+            }
+            // inconclusive = leave as null (needs manual label)
+          }
+
+          setState((prev) => ({
+            ...prev,
+            autoLabelResults: autoResults,
+            labelingCorrectAnswers: { ...prev.labelingCorrectAnswers, ...prePopulatedAnswers },
+            isAutoLabeling: false,
+            isProcessingBenchmarks: false,
+            optimizeView: "labeling",
+            hasLabelingSession: true,
+          }))
+        } else {
+          setState((prev) => ({
+            ...prev,
+            isAutoLabeling: false,
+            isProcessingBenchmarks: false,
+            optimizeView: "labeling",
+            hasLabelingSession: true,
+          }))
+        }
+      } catch (err) {
+        // Auto-labeling failed - still navigate to labeling, just without auto-labels
+        console.warn("Auto-labeling failed:", err)
+        setState((prev) => ({
+          ...prev,
+          isAutoLabeling: false,
+          isProcessingBenchmarks: false,
+          optimizeView: "labeling",
+          hasLabelingSession: true,
+        }))
+      }
     }
-  }, [state.genieSpaceId, state.spaceData, state.selectedQuestions, state.labelingGeneratedSql])
+  }, [state.genieSpaceId, state.spaceData, state.selectedQuestions, state.labelingGeneratedSql, state.sqlWarehouseId])
 
   const cancelBenchmarkProcessing = useCallback(() => {
     benchmarkProcessingCancelledRef.current = true
@@ -974,6 +1112,8 @@ export function useAnalysis() {
       selectAllQuestions,
       deselectAllQuestions,
       clearSpaceData,
+      setSqlWarehouseId,
+      setTargetDirectory,
       // Labeling session actions
       setLabelingCurrentIndex,
       setLabelingGeneratedSql,
@@ -982,6 +1122,9 @@ export function useAnalysis() {
       setLabelingCorrectAnswer,
       setLabelingFeedbackText,
       clearLabelingSession,
+      // Auto-labeling actions
+      setUserOverride,
+      setOverrideReason,
       // Benchmark processing actions
       processBenchmarksAndGoToLabeling,
       cancelBenchmarkProcessing,

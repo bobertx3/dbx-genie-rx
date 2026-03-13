@@ -21,6 +21,9 @@ from agent_server.ingest import get_serialized_space
 from agent_server.models import (
     AgentInput,
     AgentOutput,
+    AutoLabelRequest,
+    AutoLabelResponse,
+    AutoLabelResult,
     ConfigMergeRequest,
     ConfigMergeResponse,
     GenieCreateRequest,
@@ -309,27 +312,36 @@ async def analyze_all_sections(request: AnalyzeAllSectionsRequest):
 @router.post("/analyze/stream")
 async def stream_analysis(request: StreamAnalysisRequest):
     """Stream analysis progress for all sections.
-    
+
     Returns Server-Sent Events with progress updates and final results.
     """
+    from agent_server.auth import get_obo_token, set_obo_token
+
+    # Capture OBO token before entering the sync generator thread
+    captured_token = get_obo_token()
+
     def generate():
-        analyzer = get_analyzer()
-        input_obj = AgentInput(genie_space_id=request.genie_space_id)
-        gen = analyzer.predict_streaming(input_obj)
-        
-        result = None
+        set_obo_token(captured_token)
         try:
-            while True:
-                progress = next(gen)
-                yield f"data: {json.dumps(progress)}\n\n"
-        except StopIteration as e:
-            result = e.value
-        
-        if result:
-            from agent_server.agent import save_analysis_output
-            save_analysis_output(result)
-            yield f"data: {json.dumps({'status': 'result', 'data': result.model_dump()})}\n\n"
-    
+            analyzer = get_analyzer()
+            input_obj = AgentInput(genie_space_id=request.genie_space_id)
+            gen = analyzer.predict_streaming(input_obj)
+
+            result = None
+            try:
+                while True:
+                    progress = next(gen)
+                    yield f"data: {json.dumps(progress)}\n\n"
+            except StopIteration as e:
+                result = e.value
+
+            if result:
+                from agent_server.agent import save_analysis_output
+                save_analysis_output(result)
+                yield f"data: {json.dumps({'status': 'result', 'data': result.model_dump()})}\n\n"
+        finally:
+            set_obo_token(None)
+
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
@@ -457,6 +469,26 @@ async def get_settings():
     )
 
 
+@router.post("/auto-label", response_model=AutoLabelResponse)
+async def auto_label(request: AutoLabelRequest):
+    """Auto-label benchmark questions using hybrid error analysis.
+
+    Uses programmatic comparison first, falling back to LLM for ambiguous cases.
+    """
+    from agent_server.error_analysis import auto_label_items
+
+    logger.info(f"Auto-labeling {len(request.items)} items")
+
+    try:
+        items = [item.model_dump() for item in request.items]
+        results = auto_label_items(items)
+        return AutoLabelResponse(
+            results=[AutoLabelResult(**r) for r in results]
+        )
+    except Exception as e:
+        raise _safe_error(e, 500, "Auto-labeling failed")
+
+
 @router.post("/optimize")
 async def stream_optimizations(request: OptimizationRequest):
     """Stream optimization progress with heartbeats to prevent proxy timeouts.
@@ -469,44 +501,60 @@ async def stream_optimizations(request: OptimizationRequest):
     import asyncio
     import concurrent.futures
 
+    from agent_server.auth import get_obo_token, set_obo_token
+
     logger.info(f"Received streaming optimization request for space: {request.genie_space_id}")
     logger.info(f"Feedback items count: {len(request.labeling_feedback)}")
+
+    # Capture OBO token before entering the async generator
+    captured_token = get_obo_token()
 
     async def generate():
         """Async SSE generator with heartbeats."""
         loop = asyncio.get_event_loop()
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
-        # Run optimizer in thread pool
+        # Run optimizer in thread pool with OBO token propagation
         def run_optimizer():
-            optimizer = get_optimizer()
-            return optimizer.generate_optimizations(
-                space_data=request.space_data,
-                labeling_feedback=request.labeling_feedback,
-            )
+            set_obo_token(captured_token)
+            try:
+                optimizer = get_optimizer()
+                return optimizer.generate_optimizations(
+                    space_data=request.space_data,
+                    labeling_feedback=request.labeling_feedback,
+                )
+            finally:
+                set_obo_token(None)
 
         future = loop.run_in_executor(executor, run_optimizer)
-        start_time = asyncio.get_event_loop().time()
+        start_time = loop.time()
         heartbeat_interval = 15  # seconds
 
         while True:
+            # Check if the future already completed (with result or exception)
+            if future.done():
+                try:
+                    result = future.result()
+                    logger.info(f"Generated {len(result.suggestions)} suggestions, sending complete event")
+                    yield f"data: {json.dumps({'status': 'complete', 'data': result.model_dump()})}\n\n"
+                except Exception as e:
+                    logger.exception(f"Optimization failed: {e}")
+                    yield f"data: {json.dumps({'status': 'error', 'message': str(e)})}\n\n"
+                break
+
+            # Wait for result or send heartbeat on timeout
             try:
-                # Wait for result with timeout (heartbeat interval)
                 result = await asyncio.wait_for(
                     asyncio.shield(future), timeout=heartbeat_interval
                 )
-                # Success - send complete event
                 logger.info(f"Generated {len(result.suggestions)} suggestions, sending complete event")
                 yield f"data: {json.dumps({'status': 'complete', 'data': result.model_dump()})}\n\n"
-                logger.info("Complete event sent")
                 break
             except asyncio.TimeoutError:
-                # Still running - send heartbeat
-                elapsed = int(asyncio.get_event_loop().time() - start_time)
+                elapsed = int(loop.time() - start_time)
                 logger.info(f"Sending heartbeat at {elapsed}s")
                 yield f"data: {json.dumps({'status': 'processing', 'message': f'Generating suggestions... ({elapsed}s elapsed)', 'elapsed_seconds': elapsed})}\n\n"
             except Exception as e:
-                # Error - send error event
                 logger.exception(f"Optimization failed: {e}")
                 yield f"data: {json.dumps({'status': 'error', 'message': str(e)})}\n\n"
                 break
@@ -554,6 +602,7 @@ async def create_genie_space(request: GenieCreateRequest):
             display_name=request.display_name,
             merged_config=request.merged_config,
             parent_path=request.parent_path,
+            sql_warehouse_id=request.sql_warehouse_id,
         )
         return GenieCreateResponse(**result)
     except ValueError as e:

@@ -21,13 +21,13 @@ uv run start-server
 uv run uvicorn agent_server.start_server:app --reload --port 5001
 
 # Frontend development (localhost:5173, proxies to backend on 5001)
-cd frontend && npm run dev
+npm run dev
 
 # Frontend linting and type-check
-cd frontend && npm run lint
-cd frontend && npm run build  # TypeScript checked during build
+npm run lint
+npm run build  # TypeScript checked during build
 
-# Build frontend for production
+# Build frontend for production (outputs to dist/)
 ./scripts/build.sh
 
 # Deploy to Databricks Apps
@@ -39,7 +39,7 @@ cd frontend && npm run build  # TypeScript checked during build
 ```text
 ┌─────────────────┐     ┌──────────────────────┐     ┌──────────────────┐
 │  React Frontend │────▶│  FastAPI + Agent     │────▶│ Databricks LLM   │
-│  (frontend/)    │     │  (agent_server/)     │     │ (Claude Sonnet)  │
+│  (src/)         │     │  (agent_server/)     │     │ (Claude Sonnet)  │
 └─────────────────┘     └──────────────────────┘     └──────────────────┘
                                  │
         ┌────────────────────────┼────────────────────────┐
@@ -58,24 +58,28 @@ cd frontend && npm run build  # TypeScript checked during build
 | `agent_server/optimizer.py` | `GenieSpaceOptimizer` class for generating field-level optimization suggestions |
 | `agent_server/api.py` | REST API endpoints for frontend (`/api/space/fetch`, `/api/analyze/section`, `/api/optimize`, `/api/config/merge`, etc.) |
 | `agent_server/checklist_parser.py` | Parses `docs/checklist-by-schema.md` to extract checklist items by section |
-| `agent_server/checks.py` | Thin wrapper around checklist_parser for getting items per section |
-| `agent_server/auth.py` | OBO authentication for Databricks Apps, PAT/OAuth for local dev |
+| `agent_server/checks.py` | Resolves checklist items per section using checklist_parser |
+| `agent_server/auth.py` | OBO authentication via `contextvars` for Databricks Apps, PAT/OAuth for local dev |
+| `agent_server/llm_utils.py` | LLM client helper: model selection, API key resolution, chat completion wrapper |
+| `agent_server/synthesizer.py` | Cross-sectional synthesis of analysis results (assessment, celebration points, quick wins) |
+| `agent_server/error_analysis.py` | Hybrid auto-labeling: programmatic SQL comparison + LLM fallback for ambiguous cases |
+| `agent_server/genie_creator.py` | Creates new Genie Spaces via Databricks API with config validation and constraints |
 | `agent_server/ingest.py` | Databricks SDK wrapper for fetching Genie Space configs |
 | `agent_server/models.py` | Pydantic models: `AgentInput`, `AgentOutput`, `Finding`, `SectionAnalysis`, `ChecklistItem`, `OptimizationSuggestion`, `OptimizationRequest/Response`, `ConfigMergeRequest/Response` |
 | `agent_server/prompts.py` | LLM prompt templates for checklist evaluation and optimization suggestions |
 | `agent_server/sql_executor.py` | SQL execution via Databricks Statement Execution API |
-| `frontend/src/App.tsx` | Main React app orchestrating both Analyze and Optimize modes |
-| `frontend/src/components/*Phase.tsx` | Analyze mode UI: `InputPhase`, `IngestPhase`, `AnalysisPhase`, `SummaryPhase` |
-| `frontend/src/components/BenchmarksPage.tsx` | Optimize mode: Select benchmark questions for labeling |
-| `frontend/src/components/LabelingPage.tsx` | Optimize mode: Label Genie responses as correct/incorrect with feedback |
-| `frontend/src/components/FeedbackPage.tsx` | Optimize mode: Review labeling session summary |
-| `frontend/src/components/OptimizationPage.tsx` | Optimize mode: Display AI-generated optimization suggestions with selection |
-| `frontend/src/components/PreviewPage.tsx` | Optimize mode: Side-by-side JSON diff of selected config changes |
-| `frontend/src/components/SuggestionCard.tsx` | Card component showing field path, rationale, and current vs. suggested values |
-| `frontend/src/hooks/useAnalysis.ts` | Main state hook managing both Analyze and Optimize workflows |
-| `frontend/src/hooks/useTheme.ts` | Theme hook: system preference detection, localStorage persistence |
-| `frontend/src/components/ScoreGauge.tsx` | Animated radial SVG progress gauge for compliance scores |
-| `frontend/src/components/DataTable.tsx` | Reusable table for displaying SQL query results |
+| `src/App.tsx` | Main React app orchestrating both Analyze and Optimize modes |
+| `src/components/*Phase.tsx` | Analyze mode UI: `InputPhase`, `IngestPhase`, `AnalysisPhase`, `SummaryPhase` |
+| `src/components/BenchmarksPage.tsx` | Optimize mode: Select benchmark questions for labeling |
+| `src/components/LabelingPage.tsx` | Optimize mode: Review auto-labels and override with manual labels |
+| `src/components/FeedbackPage.tsx` | Optimize mode: Review labeling session summary with auto-label stats |
+| `src/components/OptimizationPage.tsx` | Optimize mode: Display AI-generated optimization suggestions with selection |
+| `src/components/PreviewPage.tsx` | Optimize mode: Side-by-side JSON diff of selected config changes |
+| `src/components/SuggestionCard.tsx` | Card component showing field path, rationale, and current vs. suggested values |
+| `src/hooks/useAnalysis.ts` | Main state hook managing both Analyze and Optimize workflows |
+| `src/hooks/useTheme.ts` | Theme hook: system preference detection, localStorage persistence |
+| `src/components/ScoreGauge.tsx` | Animated radial SVG progress gauge for compliance scores |
+| `src/components/DataTable.tsx` | Reusable table for displaying SQL query results |
 
 ### Analysis Approach
 
@@ -85,7 +89,7 @@ All checklist items are defined in `docs/checklist-by-schema.md` and evaluated b
 
 The Optimize mode follows a 5-step workflow:
 1. **Benchmarks**: Select benchmark questions from the Genie Space config
-2. **Labeling**: For each question, query Genie for SQL, execute it, and mark as correct/incorrect with optional feedback
+2. **Labeling**: For each question, query Genie for SQL, execute it, auto-label via hybrid error analysis (programmatic + LLM), and allow user override
 3. **Feedback**: Review the labeling session summary
 4. **Optimization**: AI analyzes the config + labeling feedback to generate field-level suggestions (field path, current value, suggested value, rationale, priority)
 5. **Preview**: Select suggestions and view a side-by-side JSON diff of the proposed config changes (programmatic merge, no LLM needed)
@@ -95,7 +99,8 @@ The Optimize mode follows a 5-step workflow:
 - **Markdown-driven checklist**: `docs/checklist-by-schema.md` is parsed at runtime; all items evaluated by LLM
 - **MLflow Tracing**: All LLM calls traced with session grouping via `mlflow.start_span()`
 - **Streaming SSE**: `predict_streaming()` yields progress updates; frontend consumes via `/api/analyze/stream`. Events have `status` field: `fetching`, `analyzing` (with `current`/`total`), `complete`, `result`
-- **OBO Auth**: In Databricks Apps, uses on-behalf-of tokens; locally uses PAT/OAuth from CLI
+- **OBO Auth**: In Databricks Apps, `OBOAuthMiddleware` extracts `x-forwarded-access-token` and stores it in a `contextvars.ContextVar`. All downstream code (`get_workspace_client()`, `get_llm_api_key()`) reads from this ContextVar. Locally, the token is always `None` and falls back to PAT/CLI auth.
+- **ContextVar propagation gotcha**: Starlette runs sync generators in a new thread, and `ThreadPoolExecutor` spawns its own threads — the OBO token ContextVar must be explicitly captured before and re-set inside these contexts. See `stream_analysis`, `invoke_stream` (capture + re-set), and `stream_optimizations` (`contextvars.copy_context().run()`).
 - **Section Constants**: The 10 analyzed sections are defined in `SECTIONS` list in `agent.py`
 
 ## Environment Configuration
@@ -106,17 +111,21 @@ Configuration in `.env.local` (created by quickstart.sh):
 DATABRICKS_HOST=https://your-workspace.cloud.databricks.com
 DATABRICKS_CONFIG_PROFILE=DEFAULT   # or DATABRICKS_TOKEN for PAT
 MLFLOW_EXPERIMENT_ID=<id>           # Optional: set to enable tracing
-LLM_MODEL=databricks-claude-sonnet-4
-SQL_WAREHOUSE_ID=<id>               # Optional: for SQL execution in labeling sessions
+LLM_MODEL=databricks-claude-sonnet-4-6
+SQL_WAREHOUSE_ID=<id>               # Optional fallback: users can enter in UI
+GENIE_TARGET_DIRECTORY=<path>       # Optional fallback: users can enter in UI
 ```
 
-Note: MLflow tracing is optional. Leave `MLFLOW_EXPERIMENT_ID` empty to disable it. SQL_WAREHOUSE_ID enables executing benchmark SQL queries on the labeling page.
+Notes:
+- MLflow tracing is optional. Leave `MLFLOW_EXPERIMENT_ID` empty to disable it.
+- `SQL_WAREHOUSE_ID` and `GENIE_TARGET_DIRECTORY` can be entered by users in the UI (under "optional settings" on the input page). Env vars serve as fallback defaults when the UI fields are left empty.
 
 ## Technology Stack
 
 - **Backend**: Python 3.11+, FastAPI, Databricks SDK 0.38+, MLflow 3.6+
 - **Frontend**: React 18, TypeScript, Vite, Tailwind CSS v4
 - **Design System**: Self-hosted fonts (Cabinet Grotesk, General Sans, JetBrains Mono), CSS custom properties for theming, dark mode support
+- **Frontend location**: React frontend lives at project root (`src/`, `package.json`, `vite.config.ts`); Databricks Apps auto-builds from root `package.json`
 - **Package managers**: `uv` (Python), `npm` (frontend)
 - **LLM**: Databricks-hosted Claude Sonnet via serving endpoints
 
@@ -125,9 +134,9 @@ Note: MLflow tracing is optional. Leave `MLFLOW_EXPERIMENT_ID` empty to disable 
 The frontend uses a custom design system with:
 
 - **Theming**: CSS custom properties in `index.css` with `:root` (light) and `.dark` (dark) selectors
-- **Fonts**: Self-hosted in `public/fonts/` - Cabinet Grotesk (display), General Sans (body), JetBrains Mono (code)
+- **Fonts**: Self-hosted in `public/fonts/` (project root) - Cabinet Grotesk (display), General Sans (body), JetBrains Mono (code)
 - **Dark Mode**: Auto-detects `prefers-color-scheme`, persists user override in localStorage (`genierx-theme` key)
-- **Animations**: CSS-only animations defined in `index.css` (`@keyframes fadeSlideUp`, `scan`, etc.)
+- **Animations**: CSS-only animations defined in `src/index.css` (`@keyframes fadeSlideUp`, `scan`, etc.)
 
 To add/download fonts, get them from:
 

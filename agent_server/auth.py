@@ -1,10 +1,11 @@
 """
 Authentication utilities for Databricks Apps deployment.
 
-Uses service principal authentication when running on Databricks Apps,
+Uses OBO (On-Behalf-Of) user authentication when running on Databricks Apps,
 and falls back to PAT token or CLI authentication for local development.
 """
 
+import contextvars
 import logging
 import os
 
@@ -12,13 +13,24 @@ from databricks.sdk import WorkspaceClient
 
 logger = logging.getLogger(__name__)
 
-# Track if we've logged auth info
-_auth_logged = False
+# Per-request OBO token set by middleware
+_obo_token: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_obo_token", default=None
+)
+
+
+def set_obo_token(token: str | None) -> None:
+    """Set the OBO token for the current request context."""
+    _obo_token.set(token)
+
+
+def get_obo_token() -> str | None:
+    """Get the OBO token for the current request context."""
+    return _obo_token.get()
 
 
 def is_running_on_databricks_apps() -> bool:
     """Check if running on Databricks Apps (vs local development)."""
-    # DATABRICKS_APP_PORT is set when running on Databricks Apps
     return os.environ.get("DATABRICKS_APP_PORT") is not None
 
 
@@ -26,8 +38,8 @@ def get_workspace_client() -> WorkspaceClient:
     """Get a Databricks WorkspaceClient with appropriate authentication.
 
     When running on Databricks Apps:
-        Uses the app's service principal (oauth-m2m) via environment variables
-        automatically set by the platform (DATABRICKS_CLIENT_ID, etc.)
+        Uses the OBO token from the request context to act on behalf of
+        the logged-in user.
 
     When running locally:
         Uses PAT token from DATABRICKS_TOKEN or CLI profile.
@@ -35,39 +47,15 @@ def get_workspace_client() -> WorkspaceClient:
     Returns:
         WorkspaceClient configured for the current environment
     """
-    global _auth_logged
+    token = get_obo_token()
 
-    # Let SDK auto-detect authentication based on environment
-    # On Databricks Apps: uses service principal (oauth-m2m)
-    # Locally: uses PAT token or CLI profile
-    client = WorkspaceClient()
+    if token:
+        host = get_databricks_host()
+        logger.debug("Creating OBO WorkspaceClient for host: %s", host)
+        return WorkspaceClient(host=host, token=token, auth_type="pat")
 
-    if not _auth_logged:
-        logger.info("=== Databricks SDK Authentication ===")
-        logger.info(f"  Host: {client.config.host}")
-        logger.info(f"  Auth type: {client.config.auth_type}")
-        logger.info(f"  Running on Databricks Apps: {is_running_on_databricks_apps()}")
-
-        # Log relevant env vars (without exposing secrets)
-        env_vars = [
-            "DATABRICKS_HOST",
-            "DATABRICKS_APP_PORT",
-            "DATABRICKS_CLIENT_ID",
-            "DATABRICKS_TOKEN",
-        ]
-        for var in env_vars:
-            val = os.environ.get(var)
-            if val:
-                if "TOKEN" in var or "SECRET" in var:
-                    logger.info(f"  {var}: [SET]")
-                elif "CLIENT_ID" in var:
-                    logger.info(f"  {var}: {val[:8]}...")
-                else:
-                    logger.info(f"  {var}: {val}")
-
-        _auth_logged = True
-
-    return client
+    # Local dev fallback — let SDK auto-detect auth
+    return WorkspaceClient()
 
 
 def get_databricks_host() -> str:
@@ -76,20 +64,21 @@ def get_databricks_host() -> str:
     Returns:
         The Databricks host URL (without trailing slash)
     """
-    if is_running_on_databricks_apps():
-        client = get_workspace_client()
-        host = client.config.host
-        return host.rstrip("/") if host else ""
-    else:
-        host = os.environ.get("DATABRICKS_HOST", "")
-        return host.rstrip("/") if host else ""
+    # On Apps, DATABRICKS_HOST is always set by the platform
+    host = os.environ.get("DATABRICKS_HOST", "")
+    if host:
+        return host.rstrip("/")
+
+    # Local dev fallback — let SDK resolve it
+    client = WorkspaceClient()
+    return (client.config.host or "").rstrip("/")
 
 
 def get_llm_api_key() -> str:
     """Get the API key for LLM serving endpoints.
 
     When running on Databricks Apps:
-        Uses the service principal's token.
+        Uses the OBO token so LLM calls run as the logged-in user.
 
     When running locally:
         Uses PAT token from environment.
@@ -97,8 +86,8 @@ def get_llm_api_key() -> str:
     Returns:
         API key/token for authenticating with serving endpoints
     """
-    if is_running_on_databricks_apps():
-        client = get_workspace_client()
-        return client.config.token or ""
-    else:
-        return os.environ.get("DATABRICKS_TOKEN", "")
+    token = get_obo_token()
+    if token:
+        return token
+
+    return os.environ.get("DATABRICKS_TOKEN", "")

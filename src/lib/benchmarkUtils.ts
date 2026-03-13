@@ -29,8 +29,7 @@ export function getExpectedSql(question: BenchmarkQuestion | undefined): string 
   if (!question?.answer?.length) return null
   const sqlAnswer = question.answer.find(a => a.format.toLowerCase() === "sql")
   const answer = sqlAnswer || question.answer[0]
-  // Content array elements already include \n, so join with empty string
-  return answer?.content?.join("") || null
+  return answer?.content?.join("\n") || null
 }
 
 /**

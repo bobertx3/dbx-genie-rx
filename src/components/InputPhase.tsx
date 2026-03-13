@@ -3,7 +3,7 @@
  */
 
 import { useState } from "react"
-import { Search, FileJson, Loader2, AlertCircle, Sparkles, ClipboardCheck, Zap, ArrowLeft } from "lucide-react"
+import { Search, FileJson, Loader2, AlertCircle, Sparkles, ClipboardCheck, Zap, ArrowLeft, Settings2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
@@ -14,20 +14,28 @@ import { cn } from "@/lib/utils"
 
 interface InputPhaseProps {
   spaceData: Record<string, unknown> | null
+  sqlWarehouseId: string
+  targetDirectory: string
   onSelectMode: (mode: AppMode | null) => void
   onClearSpaceData: () => void
   onFetchSpace: (spaceId: string) => Promise<void>
   onParseJson: (jsonContent: string) => Promise<void>
+  onSetSqlWarehouseId: (id: string) => void
+  onSetTargetDirectory: (dir: string) => void
   isLoading: boolean
   error: string | null
 }
 
 export function InputPhase({
   spaceData,
+  sqlWarehouseId,
+  targetDirectory,
   onSelectMode,
   onClearSpaceData,
   onFetchSpace,
   onParseJson,
+  onSetSqlWarehouseId,
+  onSetTargetDirectory,
   isLoading,
   error,
 }: InputPhaseProps) {
@@ -123,6 +131,52 @@ export function InputPhase({
                     The unique identifier for your Databricks Genie Space. You can find
                     this in the Genie Space URL.
                   </p>
+
+                  {/* Settings for Optimize mode */}
+                  <div className="border-t border-default pt-4 mt-2 space-y-3">
+                    <div className="flex items-center gap-1.5 text-sm text-secondary font-medium">
+                      <Settings2 className="w-3.5 h-3.5" />
+                      Optimize Mode Settings
+                    </div>
+                    <div>
+                      <label
+                        htmlFor="sql-warehouse-id"
+                        className="block text-sm font-medium text-secondary mb-1.5"
+                      >
+                        SQL Warehouse ID
+                      </label>
+                      <Input
+                        id="sql-warehouse-id"
+                        placeholder="e.g., abc123def456"
+                        value={sqlWarehouseId}
+                        onChange={(e) => onSetSqlWarehouseId(e.target.value)}
+                        disabled={isLoading}
+                        className="font-mono"
+                      />
+                      <p className="text-xs text-muted mt-1">
+                        Required for Optimize mode — executes benchmark SQL queries and creates new Genie Spaces.
+                      </p>
+                    </div>
+                    <div>
+                      <label
+                        htmlFor="target-directory"
+                        className="block text-sm font-medium text-secondary mb-1.5"
+                      >
+                        Workspace Directory
+                      </label>
+                      <Input
+                        id="target-directory"
+                        placeholder="e.g., /Workspace/Users/you@company.com/"
+                        value={targetDirectory}
+                        onChange={(e) => onSetTargetDirectory(e.target.value)}
+                        disabled={isLoading}
+                        className="font-mono"
+                      />
+                      <p className="text-xs text-muted mt-1">
+                        Required for Optimize mode — target directory for creating new optimized Genie Spaces.
+                      </p>
+                    </div>
+                  </div>
                 </div>
               </TabsContent>
 

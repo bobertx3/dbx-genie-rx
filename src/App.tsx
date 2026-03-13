@@ -61,6 +61,7 @@ function App() {
         <OptimizationPage
           suggestions={state.optimizationSuggestions}
           summary={state.optimizationSummary}
+          diagnosis={state.optimizationDiagnosis}
           isLoading={state.isOptimizing}
           error={state.error}
           selectedSuggestions={state.selectedSuggestions}
@@ -80,6 +81,9 @@ function App() {
           selectedQuestions={state.selectedQuestions}
           correctAnswers={state.labelingCorrectAnswers}
           feedbackTexts={state.labelingFeedbackTexts}
+          autoLabelResults={state.autoLabelResults}
+          userOverrides={state.userOverrides}
+          overrideReasons={state.overrideReasons}
           onBack={actions.goToLabeling}
           onBeginOptimization={actions.startOptimization}
         />
@@ -100,10 +104,16 @@ function App() {
           correctAnswers={state.labelingCorrectAnswers}
           feedbackTexts={state.labelingFeedbackTexts}
           processingErrors={state.labelingProcessingErrors}
+          // Auto-labeling state
+          autoLabelResults={state.autoLabelResults}
+          userOverrides={state.userOverrides}
+          overrideReasons={state.overrideReasons}
           // Actions
           onSetCurrentIndex={actions.setLabelingCurrentIndex}
           onSetCorrectAnswer={actions.setLabelingCorrectAnswer}
           onSetFeedbackText={actions.setLabelingFeedbackText}
+          onSetUserOverride={actions.setUserOverride}
+          onSetOverrideReason={actions.setOverrideReason}
           onBack={actions.goToBenchmarks}
           onFinish={actions.goToFeedback}
         />
@@ -134,10 +144,14 @@ function App() {
         return (
           <InputPhase
             spaceData={state.spaceData}
+            sqlWarehouseId={state.sqlWarehouseId}
+            targetDirectory={state.targetDirectory}
             onSelectMode={actions.setMode}
             onClearSpaceData={actions.clearSpaceData}
             onFetchSpace={actions.handleFetchSpace}
             onParseJson={actions.handleParseJson}
+            onSetSqlWarehouseId={actions.setSqlWarehouseId}
+            onSetTargetDirectory={actions.setTargetDirectory}
             isLoading={state.isLoading}
             error={state.error}
           />
