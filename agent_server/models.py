@@ -113,6 +113,38 @@ class LabelingFeedbackItem(BaseModel):
     question_text: str = Field(..., min_length=1, max_length=MAX_TEXT_LENGTH)
     is_correct: bool | None
     feedback_text: str | None = Field(None, max_length=MAX_FEEDBACK_LENGTH)
+    auto_label: str | None = None  # "correct", "incorrect", "inconclusive"
+    auto_label_reason: str | None = None
+    user_override: bool | None = None  # True if user disagreed with auto-label
+    override_reason: str | None = None
+
+
+class AutoLabelItem(BaseModel):
+    """A single item to auto-label."""
+    question_id: str = Field(..., min_length=1, max_length=64)
+    question_text: str = Field(..., min_length=1, max_length=MAX_TEXT_LENGTH)
+    genie_sql: str | None = Field(None, max_length=100_000)
+    expected_sql: str | None = Field(None, max_length=100_000)
+    genie_result: dict | None = None
+    expected_result: dict | None = None
+
+
+class AutoLabelResult(BaseModel):
+    """Result of auto-labeling a single item."""
+    question_id: str
+    auto_label: str  # "correct", "incorrect", "inconclusive"
+    reason: str
+    method: str  # "programmatic" or "llm"
+
+
+class AutoLabelRequest(BaseModel):
+    """Request to auto-label a batch of items."""
+    items: list[AutoLabelItem] = Field(..., max_length=100)
+
+
+class AutoLabelResponse(BaseModel):
+    """Response with auto-label results."""
+    results: list[AutoLabelResult]
 
 
 class OptimizationRequest(BaseModel):
@@ -133,12 +165,21 @@ class OptimizationRequest(BaseModel):
         return v
 
 
+class FailureDiagnosis(BaseModel):
+    """Diagnosis of why a benchmark question failed."""
+
+    question: str
+    failure_types: list[str]
+    explanation: str
+
+
 class OptimizationResponse(BaseModel):
     """Response containing optimization suggestions."""
 
     suggestions: list[OptimizationSuggestion]
     summary: str
     trace_id: str
+    diagnosis: list[FailureDiagnosis] = []
 
 
 class ConfigMergeRequest(BaseModel):
@@ -165,6 +206,7 @@ class GenieCreateRequest(BaseModel):
     display_name: str = Field(..., min_length=1, max_length=255)
     merged_config: dict
     parent_path: str | None = Field(None, max_length=1000)
+    sql_warehouse_id: str | None = Field(None, max_length=64)
 
 
 class GenieCreateResponse(BaseModel):

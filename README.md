@@ -59,20 +59,50 @@ An LLM-powered Databricks App tool that:
   <em>6) Select suggestions and click "Create New Genie" to preview a side-by-side JSON diff of the proposed configuration changes</em>
 </p>
 
-## Prerequisites
+## Deployment
 
-- Access to Databricks Apps
-- Access to a Databricks-hosted LLM endpoint (Claude Sonnet recommended)
+This app is deployed as a [Databricks App](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/). The frontend (React/Vite) and backend (FastAPI) are built and served together — there is no separate local dev server.
 
-## Quick Start
+### Prerequisites
 
-### 1. Import the Repository
+* [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) installed and authenticated (`databricks auth login`)
+* A Databricks workspace with Apps enabled
+* Access to a Databricks-hosted LLM endpoint (Claude Sonnet recommended)
 
-1. Go to **Workspace > Repos > Add Repo**
-2. Enter the Git URL: `https://github.com/hiydavid/dbx-genie-rx.git`
-3. Click **Create Repo**
+### 1. Clone the repo
 
-### 2. Configure the App
+```bash
+git clone <repo-url>
+cd databricks-genie-workbench
+```
+
+### 2. Create the app
+
+Create a new Databricks App via the workspace UI (**Compute > Apps > Create App**). Note the app name you choose (e.g. `genie-workbench`).
+
+### 3. Sync local files to the workspace
+
+```bash
+databricks sync --watch . /Workspace/Users/<your-email>/genie-workbench
+```
+
+This uploads your project files to a workspace folder and watches for changes. Files listed in `.gitignore` and `.databricksignore` are excluded (e.g. `node_modules/`, `dist/`, `.env`).
+
+### 4. Deploy the app
+
+```bash
+databricks apps deploy <app-name> \
+  --source-code-path /Workspace/Users/<your-email>/genie-workbench
+```
+
+During deployment, Databricks Apps automatically:
+
+1. Runs `npm install` (detects root `package.json`)
+2. Runs `pip install -r requirements.txt`
+3. Runs `npm run build` (builds the React frontend to `dist/`)
+4. Starts the app via the command in `app.yaml` (`uvicorn agent_server.start_server:app`)
+
+### 5. Configure the App
 
 Open `app.yaml` in the workspace editor and configure the environment variables:
 
@@ -80,51 +110,30 @@ Open `app.yaml` in the workspace editor and configure the environment variables:
 env:
   # OPTIONAL: For capturing agent tracing
   - name: MLFLOW_EXPERIMENT_ID
-    value: "" 
+    value: ""
   # REQUIRED: Recommend sticking with Claude Sonnet 4.5 or Opus 4.5
   - name: LLM_MODEL
-    value: "databricks-claude-sonnet-4-5" 
+    value: "databricks-claude-sonnet-4-5"
   # REQUIRED: For Optimize mode SQL execution
   - name: SQL_WAREHOUSE_ID
-    value: ""  
+    value: ""
   # REQUIRED: For creating new Genie Spaces (e.g., /Workspace/Users/you@company.com/)
   - name: GENIE_TARGET_DIRECTORY
-    value: ""  
+    value: ""
 ```
 
-### 3. Deploy the App
+### 5. Configure user authorization scopes
 
-1. Go to **Compute > Apps > Create App**
-2. Name it (e.g., `genie-space-analyzer`)
-3. Click **Deploy** and select your repo folder as the source
-4. Click **Deploy** to start
+The app uses OBO (On-Behalf-Of) auth so each user operates under their own identity. Add the following OAuth scopes in the Databricks Apps UI (**Compute > Apps > [app] > Edit > User Authorization > +Add Scope**):
 
-> **Note:** The frontend is pre-built and included in the repo (`frontend/dist/`), so no build step is required.
-
-### 4. Grant Permissions
-
-After deploying, you must grant the app's service principal (SP) access to required resources.
-
-#### Via Databricks UI
-
-You can directly add resources such as Genie Space, LLM Serving Endpoint, and SQL Warehouse in the App, by going: `Databricks App UI > App resources > Edit`
-
-| Resource | Permission |
-| ---------- | ----------- |
-| Genie Space | **Can Edit** |
-| LLM Serving Endpoint | **Can Query** |
-| SQL Warehouse *(Optimize mode)* | **Can Use** |
-
-> **Note:** Make sure the `SQL_WAREHOUSE_ID` in `app.yaml` is the same one you are granting access to here.
-
-#### Via Permission Notebook
-
-The `notebooks/grant_app_permissions.py` notebook automates grants that require programmatic APIs or SQL commands. Open it in your Databricks workspace, fill in the configuration variables, and run through the cells.
-
-| Resource | Permission | Required For |
-| ---------- | ----------- | -------------- |
-| Workspace Directory | **Can Manage** | Optimize mode (create new Genie Spaces in `GENIE_TARGET_DIRECTORY`) |
-| Unity Catalog / Schema | **USE CATALOG**, **USE SCHEMA**, **SELECT** | Optimize mode (execute benchmark SQL queries) |
+| Scope | Purpose |
+|---|---|
+| `sql` | SQL warehouse queries |
+| `dashboards.genie` | Genie Space API (`/api/2.0/genie/spaces/*`) |
+| `serving.serving-endpoints` | LLM serving endpoint queries |
+| `catalog.catalogs:read` | Unity Catalog catalog browsing |
+| `catalog.schemas:read` | Unity Catalog schema browsing |
+| `catalog.tables:read` | Unity Catalog table browsing |
 
 ## MLflow Tracing (Optional)
 
@@ -155,4 +164,12 @@ metadata.`mlflow.trace.session` = '<session-id>'
 
 ## Local Development
 
-For local development and customization, see [Local Development Guide](docs/local_development_guide.md).
+**Quick start:**
+
+```bash
+# Backend with hot-reload
+uv run uvicorn agent_server.start_server:app --reload --port 5001
+
+# Frontend dev server (separate terminal)
+npm run dev
+```

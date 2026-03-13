@@ -17,14 +17,12 @@ uv sync --quiet
 
 echo ""
 echo "2. Building React frontend..."
-cd frontend
 npm install
 npm run build
-cd ..
 
 echo ""
 echo "3. Verifying build..."
-if [ -d "frontend/dist" ] && [ -f "frontend/dist/index.html" ]; then
+if [ -d "dist" ] && [ -f "dist/index.html" ]; then
     echo "   ✓ Frontend build successful"
 else
     echo "   ✗ Frontend build failed - dist directory not found"
@@ -35,7 +33,7 @@ echo ""
 echo "=== Build Complete ==="
 echo ""
 echo "To run locally:"
-echo "  Terminal 1: cd frontend && npm run dev"
+echo "  Terminal 1: npm run dev"
 echo "  Terminal 2: uv run start-server"
 echo ""
 echo "To deploy to Databricks Apps:"

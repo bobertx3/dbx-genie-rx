@@ -3,7 +3,8 @@
 # See: https://github.com/databricks-solutions/databricks-genai-app-template
 
 # =============================================================================
-# IMPORTANT: frontend/dist/ MUST be deployed (it contains the React build)
+# IMPORTANT: dist/ MUST be deployed (it contains the React build)
+# package.json and package-lock.json MUST be deployed (Databricks Apps auto-builds)
 # =============================================================================
 
 # Development and IDE files
@@ -22,19 +23,23 @@ __pycache__/
 .env.local
 .env.*
 
-# Frontend SOURCE files (not needed - only the built dist/ is needed)
-frontend/node_modules/
-frontend/src/
-frontend/public/
-frontend/*.json
-frontend/*.ts
-frontend/*.js
-frontend/*.html
-frontend/*.md
-frontend/.vite/
+# Frontend source files (not needed at runtime - Databricks Apps builds from package.json)
+node_modules/
+src/
+public/
+.vite/
+.npmrc
 
-# DO NOT ignore frontend/dist - it must be deployed!
-# The React build lives there
+# Frontend config files (not needed at runtime)
+tsconfig.json
+tsconfig.app.json
+tsconfig.node.json
+eslint.config.js
+vite.config.ts
+index.html
+
+# DO NOT ignore package.json or package-lock.json - Databricks Apps needs them for build
+# DO NOT ignore dist/ - it contains the React build output
 
 # Test and scratch files
 tests/

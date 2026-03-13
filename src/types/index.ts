@@ -123,16 +123,34 @@ export interface OptimizationSuggestion {
   category: string
 }
 
+export interface AutoLabelResult {
+  question_id: string
+  auto_label: "correct" | "incorrect" | "inconclusive"
+  reason: string
+  method: "programmatic" | "llm"
+}
+
 export interface LabelingFeedbackItem {
   question_text: string
   is_correct: boolean | null
   feedback_text: string | null
+  auto_label?: string | null
+  auto_label_reason?: string | null
+  user_override?: boolean | null
+  override_reason?: string | null
+}
+
+export interface FailureDiagnosis {
+  question: string
+  failure_types: string[]
+  explanation: string
 }
 
 export interface OptimizationResponse {
   suggestions: OptimizationSuggestion[]
   summary: string
   trace_id: string
+  diagnosis?: FailureDiagnosis[]
 }
 
 export interface ConfigMergeResponse {
@@ -146,6 +164,7 @@ export interface GenieCreateRequest {
   display_name: string
   merged_config: Record<string, unknown>
   parent_path?: string
+  sql_warehouse_id?: string
 }
 
 export interface GenieCreateResponse {

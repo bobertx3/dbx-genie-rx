@@ -18,6 +18,7 @@ import type {
   GenieCreateRequest,
   GenieCreateResponse,
   SynthesisResult,
+  AutoLabelResult,
 } from "@/types"
 
 const API_BASE = "/api"
@@ -319,24 +320,14 @@ export async function getSettings(): Promise<AppSettings> {
 }
 
 /**
- * Progress event from streaming optimization.
- */
-export interface OptimizationStreamProgress {
-  status: "processing" | "complete" | "error"
-  message?: string
-  elapsed_seconds?: number
-  data?: OptimizationResponse
-}
-
-/**
- * Stream optimization progress using Server-Sent Events.
- * Sends heartbeats to keep the connection alive during long LLM calls.
+ * Stream optimization suggestions via SSE with heartbeats.
+ * The backend sends heartbeats every 15s to keep the connection alive through proxies.
  */
 export function streamOptimizations(
   genieSpaceId: string,
   spaceData: Record<string, unknown>,
   labelingFeedback: LabelingFeedbackItem[],
-  onProgress: (progress: OptimizationStreamProgress) => void,
+  onProgress: (progress: { status: string }) => void,
   onComplete: (result: OptimizationResponse) => void,
   onError: (error: Error) => void
 ): () => void {
@@ -354,7 +345,7 @@ export function streamOptimizations(
   })
     .then(async (response) => {
       if (!response.ok) {
-        throw new ApiError("Stream request failed", response.status)
+        throw new ApiError("Optimization request failed", response.status)
       }
 
       const reader = response.body?.getReader()
@@ -365,45 +356,35 @@ export function streamOptimizations(
       const decoder = new TextDecoder()
       let buffer = ""
 
-      const processLine = (line: string) => {
-        if (line.startsWith("data: ")) {
-          try {
-            const data = JSON.parse(line.slice(6)) as OptimizationStreamProgress
-            if (data.status === "complete" && data.data) {
-              onComplete(data.data)
-            } else if (data.status === "error") {
-              onError(new Error(data.message || "Optimization failed"))
-            } else {
-              onProgress(data)
-            }
-          } catch {
-            // Ignore parse errors
-          }
-        }
-      }
-
       while (true) {
         const { done, value } = await reader.read()
-        if (done) {
-          // Process any remaining data in the buffer
-          if (buffer.trim()) {
-            processLine(buffer.trim())
-          }
-          break
-        }
+        if (done) break
 
         buffer += decoder.decode(value, { stream: true })
         const lines = buffer.split("\n\n")
         buffer = lines.pop() || ""
 
         for (const line of lines) {
-          processLine(line)
+          if (line.startsWith("data: ")) {
+            try {
+              const data = JSON.parse(line.slice(6))
+              if (data.status === "complete" && data.data) {
+                onComplete(data.data as OptimizationResponse)
+              } else if (data.status === "error") {
+                onError(new Error(data.message || "Optimization failed"))
+              } else if (data.status === "processing") {
+                onProgress({ status: data.status })
+              }
+            } catch {
+              // Ignore parse errors
+            }
+          }
         }
       }
     })
     .catch((error) => {
       if (error.name !== "AbortError") {
-        onError(error)
+        onError(error instanceof Error ? error : new Error("Optimization failed"))
       }
     })
 
@@ -446,6 +427,36 @@ export async function createGenieSpace(
       body: JSON.stringify(request),
     },
     LONG_TIMEOUT // API call to Databricks
+  )
+}
+
+export interface AutoLabelItem {
+  question_id: string
+  question_text: string
+  genie_sql: string | null
+  expected_sql: string | null
+  genie_result: SqlExecutionResult | null
+  expected_result: SqlExecutionResult | null
+}
+
+export interface AutoLabelResponse {
+  results: AutoLabelResult[]
+}
+
+/**
+ * Auto-label benchmark questions using hybrid error analysis.
+ */
+export async function autoLabelBenchmarks(
+  items: AutoLabelItem[]
+): Promise<AutoLabelResponse> {
+  return fetchWithTimeout<AutoLabelResponse>(
+    `${API_BASE}/auto-label`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items }),
+    },
+    LONG_TIMEOUT // May involve LLM calls for uncertain items
   )
 }
 

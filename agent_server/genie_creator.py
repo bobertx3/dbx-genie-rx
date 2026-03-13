@@ -160,6 +160,7 @@ def create_genie_space(
     display_name: str,
     merged_config: dict,
     parent_path: str | None = None,
+    sql_warehouse_id: str | None = None,
 ) -> dict:
     """Create a new Genie Space with the given configuration.
 
@@ -168,6 +169,8 @@ def create_genie_space(
         merged_config: The merged configuration dict (from optimization)
         parent_path: Optional workspace path for the parent directory.
                     If not provided, uses GENIE_TARGET_DIRECTORY env var.
+        sql_warehouse_id: Optional SQL warehouse ID from the frontend.
+                         If not provided, falls back to SQL_WAREHOUSE_ID env var.
 
     Returns:
         dict with:
@@ -195,12 +198,12 @@ def create_genie_space(
 
     display_name = display_name.strip()
 
-    # Get warehouse ID (required by API)
-    warehouse_id = get_sql_warehouse_id()
+    # Get warehouse ID: prefer frontend value, fall back to env var
+    warehouse_id = sql_warehouse_id or get_sql_warehouse_id()
     if not warehouse_id:
         raise ValueError(
-            "SQL_WAREHOUSE_ID must be configured to create Genie Spaces. "
-            "Set it to your SQL Warehouse ID."
+            "SQL Warehouse ID is required to create Genie Spaces. "
+            "Enter it in the settings on the input page."
         )
 
     # Enforce API constraints (text_instructions limit, empty sql removal, etc.)

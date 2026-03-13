@@ -78,8 +78,20 @@ from starlette.responses import Response, StreamingResponse
 
 from agent_server.agent import get_analyzer, save_analysis_output
 from agent_server.api import router as api_router
-from agent_server.auth import is_running_on_databricks_apps
+from agent_server.auth import is_running_on_databricks_apps, set_obo_token
 from agent_server.models import AgentInput
+
+
+class OBOAuthMiddleware(BaseHTTPMiddleware):
+    """Extract OBO token from Databricks Apps proxy header and set it in contextvars."""
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        token = request.headers.get("x-forwarded-access-token")
+        set_obo_token(token)
+        try:
+            return await call_next(request)
+        finally:
+            set_obo_token(None)
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -114,6 +126,9 @@ if _mlflow_configured:
     except Exception as e:
         logger.warning(f"MLflow git-based version tracking not configured: {e}")
 
+# Add OBO auth middleware (extracts user token on Databricks Apps; no-op locally)
+app.add_middleware(OBOAuthMiddleware)
+
 # Add security headers middleware
 app.add_middleware(SecurityHeadersMiddleware)
 
@@ -132,7 +147,7 @@ if not is_running_on_databricks_apps():
 app.include_router(api_router)
 
 # Serve static files from React build (production)
-FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
+FRONTEND_DIST = Path(__file__).parent.parent / "dist"
 
 if FRONTEND_DIST.exists():
     # Mount static assets
@@ -161,7 +176,7 @@ else:
         return {
             "error": "Frontend not built or not deployed",
             "expected_path": str(FRONTEND_DIST),
-            "hint": "Ensure frontend/dist/ is included in deployment (check .databricksignore)",
+            "hint": "Ensure dist/ is included in deployment (check .databricksignore)",
         }
 
 
@@ -169,23 +184,31 @@ else:
 @app.post("/invocations/stream")
 async def invoke_stream(data: dict):
     """Streaming invocation endpoint that sends progress updates."""
+    from agent_server.auth import get_obo_token
+
+    # Capture OBO token before entering the sync generator thread
+    captured_token = get_obo_token()
 
     def generate():
-        analyzer = get_analyzer()
-        input_obj = AgentInput(**data)
-        gen = analyzer.predict_streaming(input_obj)
-
-        result = None
+        set_obo_token(captured_token)
         try:
-            while True:
-                progress = next(gen)
-                yield f"data: {json.dumps(progress)}\n\n"
-        except StopIteration as e:
-            result = e.value
+            analyzer = get_analyzer()
+            input_obj = AgentInput(**data)
+            gen = analyzer.predict_streaming(input_obj)
 
-        if result:
-            save_analysis_output(result)
-            yield f"data: {json.dumps({'status': 'result', 'data': result.model_dump()})}\n\n"
+            result = None
+            try:
+                while True:
+                    progress = next(gen)
+                    yield f"data: {json.dumps(progress)}\n\n"
+            except StopIteration as e:
+                result = e.value
+
+            if result:
+                save_analysis_output(result)
+                yield f"data: {json.dumps({'status': 'result', 'data': result.model_dump()})}\n\n"
+        finally:
+            set_obo_token(None)
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 

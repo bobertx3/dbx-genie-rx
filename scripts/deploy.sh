@@ -2,13 +2,13 @@
 # =============================================================================
 # Deploy Script for Databricks Apps
 # =============================================================================
-# This script prepares and syncs the Genie Space Analyzer to Databricks.
+# This script syncs files to Databricks and deploys the app.
 # Based on: https://docs.databricks.com/aws/en/dev-tools/databricks-apps/deploy
 #
 # It will:
 #   1. Verify prerequisites (Databricks CLI, authentication, app.yaml)
 #   2. Sync files to the workspace
-#   3. Provide instructions for deploying via UI
+#   3. Deploy (or create + deploy) the app
 #
 # Usage: ./scripts/deploy.sh <app-name>
 # Example: ./scripts/deploy.sh genie-space-analyzer
@@ -31,7 +31,7 @@ error() { echo -e "${RED}✗${NC} $1"; exit 1; }
 
 echo ""
 echo "=========================================="
-echo "  Genie Space Analyzer - Sync to Databricks"
+echo "  Genie Space Analyzer - Deploy to Databricks"
 echo "=========================================="
 echo ""
 
@@ -48,11 +48,11 @@ if command -v databricks &> /dev/null; then
     success "Databricks CLI is installed"
 else
     error "Databricks CLI is not installed. Please install it first:
-    
+
     # macOS
     brew tap databricks/tap
     brew install databricks
-    
+
     See: https://docs.databricks.com/dev-tools/cli/install"
 fi
 
@@ -65,9 +65,9 @@ if databricks current-user me &> /dev/null; then
     success "Authenticated as: $DATABRICKS_USER"
 else
     error "Not authenticated with Databricks. Please run:
-    
+
     databricks auth login
-    
+
     Or run ./scripts/quickstart.sh to set up your environment."
 fi
 
@@ -87,48 +87,23 @@ fi
 info "Checking MLflow experiment configuration..."
 MLFLOW_EXP_ID=$(grep -A1 "MLFLOW_EXPERIMENT_ID" app.yaml | grep "value:" | sed 's/.*value: *"\{0,1\}\([^"]*\)"\{0,1\}/\1/' | tr -d ' ')
 
-# Also check .env.local for the experiment ID
-LOCAL_EXP_ID=""
-if [ -f ".env.local" ]; then
-    LOCAL_EXP_ID=$(grep "^MLFLOW_EXPERIMENT_ID=" .env.local 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d ' ' || true)
-fi
-
 if [ -z "$MLFLOW_EXP_ID" ] || [ "$MLFLOW_EXP_ID" = '""' ]; then
     warn "MLFLOW_EXPERIMENT_ID is not set in app.yaml"
     echo ""
-    
-    # Suggest the value from .env.local if available
-    if [ -n "$LOCAL_EXP_ID" ]; then
-        echo "  Found experiment ID in .env.local: $LOCAL_EXP_ID"
-        echo ""
-        read -p "  Use this experiment ID? [Y/n]: " USE_LOCAL
-        if [ -z "$USE_LOCAL" ] || [ "$USE_LOCAL" = "y" ] || [ "$USE_LOCAL" = "Y" ]; then
-            MLFLOW_EXP_ID="$LOCAL_EXP_ID"
-        fi
-    fi
-    
-    # If still empty, prompt user to enter it
-    if [ -z "$MLFLOW_EXP_ID" ] || [ "$MLFLOW_EXP_ID" = '""' ]; then
-        echo ""
-        echo "  Enter your MLflow experiment ID (or press Enter to skip):"
-        read -p "  Experiment ID: " MLFLOW_EXP_ID
-    fi
-    
+    echo "  Enter your MLflow experiment ID (or press Enter to skip):"
+    read -p "  Experiment ID: " MLFLOW_EXP_ID
+
     # Update app.yaml if we have an experiment ID
-    if [ -n "$MLFLOW_EXP_ID" ] && [ "$MLFLOW_EXP_ID" != '""' ]; then
+    if [ -n "$MLFLOW_EXP_ID" ]; then
         info "Updating app.yaml with experiment ID..."
-        # Use sed to update the MLFLOW_EXPERIMENT_ID value in app.yaml
         if [[ "$OSTYPE" == "darwin"* ]]; then
-            # macOS sed requires empty string for -i
             sed -i '' "s/\(MLFLOW_EXPERIMENT_ID\)$/\1/; /MLFLOW_EXPERIMENT_ID/{n;s/value: *\"[^\"]*\"/value: \"$MLFLOW_EXP_ID\"/;}" app.yaml
         else
             sed -i "s/\(MLFLOW_EXPERIMENT_ID\)$/\1/; /MLFLOW_EXPERIMENT_ID/{n;s/value: *\"[^\"]*\"/value: \"$MLFLOW_EXP_ID\"/;}" app.yaml
         fi
         success "Updated app.yaml with MLFLOW_EXPERIMENT_ID: $MLFLOW_EXP_ID"
     else
-        warn "Skipping MLFLOW_EXPERIMENT_ID configuration."
-        echo "  MLflow tracing will not work until this is configured."
-        echo "  Run ./scripts/quickstart.sh to create an experiment."
+        warn "Skipping MLflow configuration. Tracing will be disabled."
         echo ""
     fi
 else
@@ -150,29 +125,41 @@ databricks sync . "$WORKSPACE_PATH"
 success "Files synced to $WORKSPACE_PATH"
 
 # -----------------------------------------------------------------------------
-# Done - Provide UI deployment instructions
+# Step 6: Deploy (or create + deploy) the app
+# -----------------------------------------------------------------------------
+echo ""
+info "Deploying app: $APP_NAME ..."
+
+# Check if the app already exists
+if databricks apps get "$APP_NAME" &> /dev/null; then
+    info "App '$APP_NAME' exists, deploying update..."
+    databricks apps deploy "$APP_NAME" --source-code-path "$WORKSPACE_PATH"
+else
+    info "App '$APP_NAME' does not exist, creating..."
+    databricks apps create "$APP_NAME"
+    info "Deploying..."
+    databricks apps deploy "$APP_NAME" --source-code-path "$WORKSPACE_PATH"
+fi
+
+success "Deployment initiated for $APP_NAME"
+
+# -----------------------------------------------------------------------------
+# Done
 # -----------------------------------------------------------------------------
 echo ""
 echo "=========================================="
-echo "  Files Synced Successfully!"
+echo "  Deployment Started!"
 echo "=========================================="
 echo ""
-echo "Source code synced to: $WORKSPACE_PATH"
+echo "Source code: $WORKSPACE_PATH"
 echo ""
-echo "To deploy the app, follow these steps in the Databricks UI:"
+echo "The app uses OBO (On-Behalf-Of) authentication — users access"
+echo "resources with their own Databricks permissions. No service"
+echo "principal grants are needed."
 echo ""
-echo "  1. Go to Compute > Apps in your Databricks workspace"
+echo "Check deployment status:"
+echo "  databricks apps get $APP_NAME"
 echo ""
-echo "  2. If the app doesn't exist yet:"
-echo "     - Click 'Create App'"
-echo "     - Name it: $APP_NAME"
-echo ""
-echo "  3. Click on the app, then click 'Deploy'"
-echo ""
-echo "  4. Select the source folder:"
-echo "     $WORKSPACE_PATH"
-echo ""
-echo "  5. Click 'Deploy' to start the deployment"
-echo ""
-echo "After deployment, you can access the app from the Apps page."
+echo "View logs:"
+echo "  databricks apps logs $APP_NAME"
 echo ""

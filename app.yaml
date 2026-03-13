@@ -5,7 +5,7 @@
 # access Genie Spaces they have permission to manage.
 #
 # The FastAPI server serves both:
-# - Static React frontend files from /frontend/dist
+# - Static React frontend files from /dist (built by Databricks Apps from root package.json)
 # - REST API endpoints under /api
 
 command:
@@ -24,18 +24,18 @@ env:
   - name: MLFLOW_EXPERIMENT_ID
     value: ""  # OPTIONAL: Set to your MLflow experiment ID to enable tracing
   - name: LLM_MODEL
-    value: "databricks-claude-sonnet-4-5"
+    value: "databricks-claude-sonnet-4-6"
   - name: SQL_WAREHOUSE_ID
-    value: ""  # Required for Optimize mode SQL execution
+    value: ""  # Optional fallback — users can enter this in the UI
   - name: GENIE_TARGET_DIRECTORY
-    value: ""  # Required for creating new Genie Spaces (e.g., /Workspace/Users/you@company.com/)
-    
-# Service Principal authorization
-# The app uses its own service principal identity to access Databricks resources.
-# You must grant the app's service principal access to:
-#   1. Genie Spaces: Add SP with "Can Edit" permission
-#   2. LLM Serving Endpoints: Add SP with "Can Query" permission
-#   3. Target Directory (for creating new Genie Spaces): SP needs write permission
-#
-# Find the service principal in: Compute > Apps > [your app] > Authorization
-# The SP name follows the pattern: app-XXXXX [app-name]
+    value: ""  # Optional fallback — users can enter this in the UI
+
+# OBO (On-Behalf-Of) user authentication
+# The app acts on behalf of the logged-in user via the x-forwarded-access-token
+# header injected by the Databricks Apps proxy. Users can only access resources
+# they already have permission to:
+#   1. Genie Spaces: User needs "Can Edit" or "Can Manage" permission
+#   2. LLM Serving Endpoints: User needs "Can Query" permission
+#   3. SQL Warehouses: User needs "Can Use" permission
+#   4. Target Directory (for creating new Genie Spaces): User needs write permission
+# No service principal grants are needed.
