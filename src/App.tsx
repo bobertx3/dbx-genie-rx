@@ -165,6 +165,7 @@ function App() {
             sections={state.sections}
             sectionAnalyses={state.sectionAnalyses}
             isLoading={state.isLoading}
+            error={state.error}
             analysisProgress={state.analysisProgress}
             selectedSections={state.selectedSections}
             onToggleSectionSelection={actions.toggleSectionSelection}

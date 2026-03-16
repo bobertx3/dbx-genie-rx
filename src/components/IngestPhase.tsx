@@ -7,6 +7,7 @@ import {
   Check,
   AlertTriangle,
   Loader2,
+  XCircle,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -19,6 +20,7 @@ interface IngestPhaseProps {
   sections: SectionInfo[]
   sectionAnalyses: SectionAnalysis[]
   isLoading: boolean
+  error: string | null
   analysisProgress: { completed: number; total: number } | null
   selectedSections: number[]
   onToggleSectionSelection: (index: number) => void
@@ -40,6 +42,7 @@ export function IngestPhase({
   sections,
   sectionAnalyses,
   isLoading,
+  error,
   analysisProgress,
   selectedSections,
   onToggleSectionSelection,
@@ -98,6 +101,17 @@ export function IngestPhase({
           </Button>
         </div>
       </div>
+
+      {/* Error display */}
+      {error && (
+        <div className="flex items-start gap-3 p-4 rounded-lg bg-danger/10 border border-danger/20 text-danger">
+          <XCircle className="w-5 h-5 mt-0.5 shrink-0" />
+          <div className="text-sm">
+            <p className="font-medium">Analysis failed</p>
+            <p className="mt-1 text-danger/80">{error}</p>
+          </div>
+        </div>
+      )}
 
       {/* Summary stats */}
       <div className="flex items-center gap-4 text-sm">
