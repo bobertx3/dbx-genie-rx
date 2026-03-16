@@ -143,50 +143,85 @@ export interface AnalyzeAllResponse {
 }
 
 /**
- * Analyze all sections with cross-sectional synthesis.
- * Returns style detection, section analyses, and synthesis (for full analysis only).
+ * Synthesize cross-sectional analysis results.
  */
-export async function analyzeAllSections(
+interface SynthesizeResponse {
+  synthesis: SynthesisResult | null
+  is_full_analysis: boolean
+}
+
+/**
+ * Analyze all sections via individual HTTP requests to avoid proxy timeouts.
+ *
+ * Databricks Apps proxy has a hard ~120s total request timeout — SSE/heartbeats
+ * don't help. Instead, each section is analyzed as a separate short request
+ * (~10-45s each), with synthesis as a final separate request.
+ *
+ * Returns an abort function for cleanup.
+ */
+export function analyzeAllSectionsSequential(
   sections: SectionInfo[],
   fullSpace: Record<string, unknown>,
-  onProgress?: (completed: number, total: number) => void
-): Promise<AnalyzeAllResponse> {
-  // Simulate progress updates during the request
-  const total = sections.length
-  let progressInterval: ReturnType<typeof setInterval> | null = null
+  onProgress: (current: number, total: number, section?: string) => void,
+  onComplete: (result: AnalyzeAllResponse) => void,
+  onError: (error: Error) => void
+): () => void {
+  const abortController = new AbortController()
 
-  if (onProgress) {
-    let current = 0
-    progressInterval = setInterval(() => {
-      if (current < total - 1) {
-        current++
-        onProgress(current, total)
+  ;(async () => {
+    try {
+      const analyses: SectionAnalysis[] = []
+
+      for (let i = 0; i < sections.length; i++) {
+        const section = sections[i]
+        const response = await fetch(`${API_BASE}/analyze/section`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            section_name: section.name,
+            section_data: section.data,
+            full_space: fullSpace,
+          }),
+          signal: abortController.signal,
+        })
+
+        if (!response.ok) {
+          const error = await response.json().catch(() => ({ detail: response.statusText }))
+          throw new ApiError(error.detail || "Section analysis failed", response.status)
+        }
+
+        const analysis = (await response.json()) as SectionAnalysis
+        analyses.push(analysis)
+        onProgress(i + 1, sections.length, section.name)
       }
-    }, 2000) // Update every 2 seconds
-  }
 
-  try {
-    const result = await fetchWithTimeout<AnalyzeAllResponse>(
-      `${API_BASE}/analyze/all`,
-      {
+      // Run cross-sectional synthesis
+      const synthResponse = await fetch(`${API_BASE}/analyze/synthesize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sections: sections.map((s) => ({ name: s.name, data: s.data })),
-          full_space: fullSpace,
-        }),
-      },
-      LONG_TIMEOUT // LLM operation
-    )
+        body: JSON.stringify({ analyses, full_space: fullSpace }),
+        signal: abortController.signal,
+      })
 
-    // Final progress update
-    onProgress?.(total, total)
-    return result
-  } finally {
-    if (progressInterval) {
-      clearInterval(progressInterval)
+      if (!synthResponse.ok) {
+        const error = await synthResponse.json().catch(() => ({ detail: synthResponse.statusText }))
+        throw new ApiError(error.detail || "Synthesis failed", synthResponse.status)
+      }
+
+      const synthResult = (await synthResponse.json()) as SynthesizeResponse
+
+      onComplete({
+        analyses,
+        synthesis: synthResult.synthesis,
+        is_full_analysis: synthResult.is_full_analysis,
+      })
+    } catch (err) {
+      if (abortController.signal.aborted) return
+      onError(err instanceof Error ? err : new Error("Analysis failed"))
     }
-  }
+  })()
+
+  return () => abortController.abort()
 }
 
 /**

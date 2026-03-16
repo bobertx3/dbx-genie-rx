@@ -21,7 +21,7 @@ import {
   fetchSpace,
   parseSpaceJson,
   analyzeSection,
-  analyzeAllSections as analyzeAllSectionsApi,
+  analyzeAllSectionsSequential,
   streamOptimizations,
   mergeConfig,
   queryGenie,
@@ -150,6 +150,7 @@ const initialState: AnalysisState = {
 export function useAnalysis() {
   const [state, setState] = useState<AnalysisState>(initialState)
   const benchmarkProcessingCancelledRef = useRef(false)
+  const analysisAbortRef = useRef<(() => void) | null>(null)
 
   const setMode = useCallback((mode: AppMode | null) => {
     setState((prev) => {
@@ -241,7 +242,7 @@ export function useAnalysis() {
     }))
   }, [])
 
-  const analyzeAllSections = useCallback(async () => {
+  const analyzeAllSections = useCallback(() => {
     const { sections, spaceData, selectedSections } = state
     if (!spaceData || selectedSections.length === 0) return
 
@@ -255,38 +256,46 @@ export function useAnalysis() {
       analysisProgress: { completed: 0, total: sectionsToAnalyze.length },
     }))
 
-    try {
-      const response = await analyzeAllSectionsApi(
-        sectionsToAnalyze,
-        spaceData,
-        (completed, total) =>
-          setState((prev) => ({ ...prev, analysisProgress: { completed, total } }))
-      )
+    // Store abort function for cleanup
+    analysisAbortRef.current = analyzeAllSectionsSequential(
+      sectionsToAnalyze,
+      spaceData,
+      // onProgress — real progress from SSE
+      (current, total) => {
+        setState((prev) => ({ ...prev, analysisProgress: { completed: current, total } }))
+      },
+      // onComplete
+      (response) => {
+        analysisAbortRef.current = null
 
-      // Map results back to original section indices (sparse array)
-      const sparseAnalyses: SectionAnalysis[] = []
-      selectedSections.forEach((sectionIndex, resultIndex) => {
-        sparseAnalyses[sectionIndex] = response.analyses[resultIndex]
-      })
+        // Map results back to original section indices (sparse array)
+        const sparseAnalyses: SectionAnalysis[] = []
+        selectedSections.forEach((sectionIndex, resultIndex) => {
+          sparseAnalyses[sectionIndex] = response.analyses[resultIndex]
+        })
 
-      setState((prev) => ({
-        ...prev,
-        sectionAnalyses: sparseAnalyses,
-        synthesis: response.synthesis,
-        isFullAnalysis: response.is_full_analysis,
-        allSectionsAnalyzed: true,
-        phase: "summary",
-        isLoading: false,
-        analysisProgress: null,
-      }))
-    } catch (err) {
-      setState((prev) => ({
-        ...prev,
-        error: err instanceof Error ? err.message : "Analysis failed",
-        isLoading: false,
-        analysisProgress: null,
-      }))
-    }
+        setState((prev) => ({
+          ...prev,
+          sectionAnalyses: sparseAnalyses,
+          synthesis: response.synthesis,
+          isFullAnalysis: response.is_full_analysis,
+          allSectionsAnalyzed: true,
+          phase: "summary",
+          isLoading: false,
+          analysisProgress: null,
+        }))
+      },
+      // onError
+      (err) => {
+        analysisAbortRef.current = null
+        setState((prev) => ({
+          ...prev,
+          error: err instanceof Error ? err.message : "Analysis failed",
+          isLoading: false,
+          analysisProgress: null,
+        }))
+      }
+    )
   }, [state.sections, state.spaceData, state.selectedSections])
 
   const analyzeSingleSection = useCallback(
@@ -1064,6 +1073,11 @@ export function useAnalysis() {
   }, [])
 
   const reset = useCallback(() => {
+    // Abort any in-flight analysis stream
+    if (analysisAbortRef.current) {
+      analysisAbortRef.current()
+      analysisAbortRef.current = null
+    }
     setState(initialState)
   }, [])
 

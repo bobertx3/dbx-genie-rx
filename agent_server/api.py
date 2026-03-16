@@ -257,56 +257,153 @@ async def analyze_section(request: AnalyzeSectionRequest) -> SectionAnalysis:
         raise _safe_error(e, 500, "Section analysis failed")
 
 
-@router.post("/analyze/all", response_model=AnalyzeAllSectionsResponse)
-async def analyze_all_sections(request: AnalyzeAllSectionsRequest):
-    """Analyze all selected sections with cross-sectional synthesis.
+class SynthesizeRequest(BaseModel):
+    """Request to synthesize cross-sectional analysis."""
+    analyses: list[SectionAnalysis]
+    full_space: dict
 
-    Returns style detection (heuristic), section analyses (LLM),
-    and synthesis (LLM, for full analysis).
 
-    Full analysis = analyzed all CONFIGURED sections (sections with data).
-    This means a space with only tables configured gets full synthesis
-    when tables are analyzed, without being penalized for not having
-    metric views or other optional sections.
+class SynthesizeResponse(BaseModel):
+    """Response with synthesis results."""
+    synthesis: SynthesisResult | None
+    is_full_analysis: bool
+
+
+@router.post("/analyze/synthesize", response_model=SynthesizeResponse)
+async def synthesize_endpoint(request: SynthesizeRequest):
+    """Run cross-sectional synthesis on completed section analyses.
+
+    Determines if all configured sections were analyzed (full analysis)
+    and produces synthesis if so.
     """
     try:
         analyzer = get_analyzer()
-        analyzer.start_session()
+        all_sections = analyzer.get_all_sections(request.full_space)
+        configured_names = {name for name, data in all_sections if data is not None}
+        analyzed_names = {a.section_name for a in request.analyses}
+        is_full_analysis = configured_names <= analyzed_names
+
+        synthesis = None
+        if is_full_analysis:
+            synthesis = synthesize_analysis(request.analyses, is_full_analysis)
+
+        return SynthesizeResponse(
+            synthesis=synthesis,
+            is_full_analysis=is_full_analysis,
+        )
+    except Exception as e:
+        raise _safe_error(e, 500, "Synthesis failed")
+
+
+@router.post("/analyze/all")
+async def analyze_all_sections(request: AnalyzeAllSectionsRequest):
+    """Stream analysis of all selected sections with cross-sectional synthesis.
+
+    Returns Server-Sent Events with real-time progress. Each section analysis
+    runs via run_in_executor and yields a progress event immediately after
+    completion, keeping data flowing through Databricks Apps reverse proxy.
+
+    SSE events:
+    - {"status": "analyzing", "current": N, "total": M, "section": "name"}
+    - {"status": "synthesizing"}
+    - {"status": "complete", "data": {...AnalyzeAllSectionsResponse...}}
+    - {"status": "error", "message": "..."}
+    """
+    import asyncio
+    import concurrent.futures
+
+    from agent_server.auth import get_obo_token, set_obo_token
+
+    # Capture OBO token before entering the async generator
+    captured_token = get_obo_token()
+    sections_to_analyze = request.sections
+    full_space = request.full_space
+    logger.info(f"[analyze-all] SSE endpoint called with {len(sections_to_analyze)} sections")
+
+    async def generate():
+        """Async SSE generator — yields after each section to keep connection alive."""
+        loop = asyncio.get_running_loop()
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
         try:
-            # Analyze each section
+            # Initialize analyzer in the worker thread (sets OBO token)
+            def init():
+                set_obo_token(captured_token)
+                a = get_analyzer()
+                a.start_session()
+                return a
+
+            analyzer = await loop.run_in_executor(executor, init)
+
             analyses = []
-            for section in request.sections:
-                analysis = analyzer.analyze_section(
-                    section["name"],
-                    section.get("data"),
-                    full_space=request.full_space,
-                )
+            total = len(sections_to_analyze)
+
+            # Analyze each section, yielding progress after each one
+            for i, section in enumerate(sections_to_analyze):
+                logger.info(f"[analyze-all] Analyzing section {i+1}/{total}: {section['name']}")
+
+                def do_analyze(s=section):
+                    set_obo_token(captured_token)
+                    return analyzer.analyze_section(
+                        s["name"], s.get("data"), full_space=full_space,
+                    )
+
+                analysis = await loop.run_in_executor(executor, do_analyze)
                 analyses.append(analysis)
 
-            # Determine configured sections in the full space
-            all_sections = analyzer.get_all_sections(request.full_space)
-            configured_section_names = {name for name, data in all_sections if data is not None}
-            analyzed_section_names = {s["name"] for s in request.sections}
+                event = {"status": "analyzing", "current": i + 1, "total": total, "section": section["name"]}
+                logger.info(f"[analyze-all] Section {i+1}/{total} done, yielding progress")
+                yield f"data: {json.dumps(event)}\n\n"
 
-            # Full analysis = analyzed all configured sections
-            # (user analyzed everything they have set up)
+            # Determine if full analysis
+            all_sections_list = analyzer.get_all_sections(full_space)
+            configured_section_names = {name for name, data in all_sections_list if data is not None}
+            analyzed_section_names = {s["name"] for s in sections_to_analyze}
             is_full_analysis = configured_section_names <= analyzed_section_names
 
-            # Run synthesis for full analysis
+            # Synthesis (if full analysis)
             synthesis = None
             if is_full_analysis:
-                synthesis = synthesize_analysis(analyses, is_full_analysis)
+                yield f"data: {json.dumps({'status': 'synthesizing'})}\n\n"
+                logger.info("[analyze-all] Running synthesis")
 
-            return AnalyzeAllSectionsResponse(
-                analyses=analyses,
-                synthesis=synthesis,
-                is_full_analysis=is_full_analysis,
+                def do_synthesize():
+                    set_obo_token(captured_token)
+                    return synthesize_analysis(analyses, is_full_analysis)
+
+                synthesis = await loop.run_in_executor(executor, do_synthesize)
+
+            result = AnalyzeAllSectionsResponse(
+                analyses=analyses, synthesis=synthesis, is_full_analysis=is_full_analysis,
             )
+            payload = json.dumps({"status": "complete", "data": result.model_dump()})
+            logger.info(f"[analyze-all] Yielding complete event ({len(payload)} bytes)")
+            yield f"data: {payload}\n\n"
+
+        except Exception as e:
+            logger.exception(f"[analyze-all] Analysis failed: {e}")
+            yield f"data: {json.dumps({'status': 'error', 'message': str(e)})}\n\n"
         finally:
-            analyzer.end_session()
-    except Exception as e:
-        raise _safe_error(e, 500, "Analysis failed")
+            # Clean up: end session in the worker thread
+            try:
+                def cleanup():
+                    set_obo_token(captured_token)
+                    try:
+                        get_analyzer().end_session()
+                    finally:
+                        set_obo_token(None)
+
+                await loop.run_in_executor(executor, cleanup)
+            except Exception:
+                pass
+            executor.shutdown(wait=False)
+
+    # Headers to prevent proxy buffering
+    headers = {
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(generate(), media_type="text/event-stream", headers=headers)
 
 
 @router.post("/analyze/stream")
