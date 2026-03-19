@@ -6,6 +6,7 @@ databricks.yml
 /output
 .cursor/
 .codex/
+.ai-dev-kit/
 
 ### Python ###
 # Byte-compiled / optimized / DLL files

@@ -34,7 +34,9 @@ def is_running_on_databricks_apps() -> bool:
     return os.environ.get("DATABRICKS_APP_PORT") is not None
 
 
-def get_workspace_client() -> WorkspaceClient:
+def get_workspace_client(
+    require_user_token: bool = False, ignore_user_token: bool = False
+) -> WorkspaceClient:
     """Get a Databricks WorkspaceClient with appropriate authentication.
 
     When running on Databricks Apps:
@@ -44,15 +46,29 @@ def get_workspace_client() -> WorkspaceClient:
     When running locally:
         Uses PAT token from DATABRICKS_TOKEN or CLI profile.
 
+    Args:
+        require_user_token: When True on Databricks Apps, require a forwarded
+            user token and raise if missing instead of falling back to app auth.
+        ignore_user_token: When True, never use forwarded user token even if
+            present; prefer app/local auth instead.
+
     Returns:
         WorkspaceClient configured for the current environment
     """
-    token = get_obo_token()
+    token = None if ignore_user_token else get_obo_token()
 
     if token:
         host = get_databricks_host()
         logger.debug("Creating OBO WorkspaceClient for host: %s", host)
         return WorkspaceClient(host=host, token=token, auth_type="pat")
+
+    # On Databricks Apps, some APIs (for example Genie space APIs) require
+    # user authorization scopes and should never run as the app principal.
+    if require_user_token and is_running_on_databricks_apps():
+        raise PermissionError(
+            "Missing user authorization token. Re-open the app and "
+            "re-authorize requested scopes, then retry."
+        )
 
     # Local dev fallback — let SDK auto-detect auth
     return WorkspaceClient()

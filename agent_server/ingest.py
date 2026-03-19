@@ -43,7 +43,7 @@ def get_genie_space(
         raise ValueError("genie_space_id is required")
 
     # Use SDK's API client - handles OBO auth automatically
-    client = get_workspace_client()
+    client = get_workspace_client(require_user_token=True)
     
     # Log diagnostic info for debugging
     logger.info(f"Fetching Genie Space: {genie_space_id}")
@@ -59,6 +59,32 @@ def get_genie_space(
         )
         return response
     except Exception as e:
+        # If user-token scope is rejected in Databricks Apps, retry with app auth.
+        # This allows app-scoped Genie resources to work even when user OAuth
+        # consent/scopes are inconsistent.
+        err_msg = str(e).lower()
+        if is_running_on_databricks_apps() and (
+            "required scopes" in err_msg or "invalid scope" in err_msg
+        ):
+            logger.warning(
+                "User-token Genie scope rejected; retrying with app authorization"
+            )
+            try:
+                app_client = get_workspace_client(ignore_user_token=True)
+                response = app_client.api_client.do(
+                    method="GET",
+                    path=f"/api/2.0/genie/spaces/{genie_space_id}",
+                    query={"include_serialized_space": "true"},
+                )
+                return response
+            except Exception as fallback_error:
+                logger.error(
+                    "App-auth fallback also failed for Genie Space %s: %s",
+                    genie_space_id,
+                    fallback_error,
+                )
+                raise ValueError(f"Unable to get space [{genie_space_id}]. {fallback_error}")
+
         logger.error(f"Failed to fetch Genie Space {genie_space_id}: {e}")
         raise ValueError(f"Unable to get space [{genie_space_id}]. {e}")
 
@@ -110,17 +136,35 @@ def query_genie_for_sql(
     if not question:
         raise ValueError("question is required")
 
-    client = get_workspace_client()
+    client = get_workspace_client(require_user_token=True)
 
     # Step 1: Start conversation
     logger.info(f"Starting Genie conversation for space {genie_space_id}")
     logger.info(f"Question: {question[:100]}...")
 
-    start_response = client.api_client.do(
-        method="POST",
-        path=f"/api/2.0/genie/spaces/{genie_space_id}/start-conversation",
-        body={"content": question},
-    )
+    try:
+        start_response = client.api_client.do(
+            method="POST",
+            path=f"/api/2.0/genie/spaces/{genie_space_id}/start-conversation",
+            body={"content": question},
+        )
+    except Exception as e:
+        err_msg = str(e).lower()
+        if is_running_on_databricks_apps() and (
+            "required scopes" in err_msg or "invalid scope" in err_msg
+        ):
+            logger.warning(
+                "User-token Genie scope rejected for conversation; retrying with app authorization"
+            )
+            app_client = get_workspace_client(ignore_user_token=True)
+            start_response = app_client.api_client.do(
+                method="POST",
+                path=f"/api/2.0/genie/spaces/{genie_space_id}/start-conversation",
+                body={"content": question},
+            )
+            client = app_client
+        else:
+            raise
 
     # Response contains nested conversation and message objects
     conversation_id = start_response["conversation"]["id"]

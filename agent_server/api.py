@@ -179,6 +179,24 @@ async def fetch_space(request: FetchSpaceRequest):
             sections=sections,
         )
     except Exception as e:
+        error_msg = str(e).lower()
+        if "missing user authorization token" in error_msg:
+            raise HTTPException(
+                status_code=401,
+                detail=(
+                    "User authorization token missing. Please refresh the app, "
+                    "re-authorize scopes, and try again."
+                ),
+            )
+        if "required scopes" in error_msg or "invalid scope" in error_msg:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Access denied by OAuth scope policy for Genie API. "
+                    "Ask the app admin to verify Genie-related user scopes, "
+                    "then re-open and re-authorize the app."
+                ),
+            )
         raise _safe_error(e, 400, "Failed to fetch Genie space")
 
 
